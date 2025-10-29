@@ -5,6 +5,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv  # 追加
+from urllib.parse import quote_plus
+from datetime import datetime
 
 # ---------- 設定（環境変数から読む） ----------
 load_dotenv()  # 追加：.env を読み込む
@@ -13,6 +15,47 @@ GAS_ENDPOINT  = os.getenv("GAS_ENDPOINT")
 API_KEY       = os.getenv("API_KEY")
 GUILD_ID      = os.getenv("GUILD_ID")
 # ----------------------------------------------
+
+# ---------- ヘルパー関数 ----------
+def generate_calendar_link(event_title, start_datetime, end_datetime):
+    """GoogleカレンダーのイベントリンクURLを生成"""
+    try:
+        # 日時をGoogleカレンダー形式に変換 (YYYYMMDDTHHMMSSZ)
+        if isinstance(start_datetime, str):
+            # ISO形式の文字列をdatetimeに変換
+            start_dt = datetime.fromisoformat(start_datetime.replace('Z', '+00:00'))
+        else:
+            start_dt = start_datetime
+            
+        if isinstance(end_datetime, str):
+            end_dt = datetime.fromisoformat(end_datetime.replace('Z', '+00:00'))
+        else:
+            end_dt = end_datetime
+        
+        # UTC時刻として扱うため、日本時間から9時間引く
+        from datetime import timedelta
+        start_utc = start_dt.replace(tzinfo=None) - timedelta(hours=9)
+        end_utc = end_dt.replace(tzinfo=None) - timedelta(hours=9)
+        
+        start_str = start_utc.strftime('%Y%m%dT%H%M%SZ')
+        end_str = end_utc.strftime('%Y%m%dT%H%M%SZ')
+        
+        # Googleカレンダーのイベント作成URL
+        base_url = "https://calendar.google.com/calendar/render"
+        params = {
+            'action': 'TEMPLATE',
+            'text': event_title,
+            'dates': f"{start_str}/{end_str}",
+            'ctz': 'Asia/Tokyo'
+        }
+        
+        # URLエンコード
+        query_string = "&".join([f"{key}={quote_plus(str(value))}" for key, value in params.items()])
+        return f"{base_url}?{query_string}"
+        
+    except Exception as e:
+        print(f"カレンダーリンク生成エラー: {e}")
+        return "https://calendar.google.com/"
 
 if not DISCORD_TOKEN or not GAS_ENDPOINT or not API_KEY:
     raise RuntimeError("環境変数 DISCORD_TOKEN/GAS_ENDPOINT/API_KEY を設定してください。")
@@ -86,12 +129,28 @@ async def t2g(interaction: discord.Interaction, mode: str, text: str):
             if not created:
                 await interaction.followup.send("作成対象がありません。", ephemeral=True)
                 return
+            
+            # イベント情報とカレンダーリンクを生成
             lines = []
+            calendar_links = []
+            
             for it in created:
                 s = str(it['start']).replace('T',' ').split('.')[0]
                 e = str(it['end']).replace('T',' ').split('.')[0]
                 lines.append(f"- {it['title']}: {s} → {e}")
-            await interaction.followup.send("**作成しました**\n```\n" + "\n".join(lines) + "\n```", ephemeral=True)
+                
+                # Googleカレンダーリンクを生成
+                calendar_url = generate_calendar_link(it['title'], it['start'], it['end'])
+                calendar_links.append(f"📅 [{it['title']}](<{calendar_url}>)")
+            
+            # 結果メッセージを作成
+            result_msg = "**✅ 作成しました**\n```\n" + "\n".join(lines) + "\n```"
+            
+            # カレンダーリンクを追加
+            if calendar_links:
+                result_msg += "\n\n**🔗 Googleカレンダーで開く:**\n" + "\n".join(calendar_links)
+            
+            await interaction.followup.send(result_msg, ephemeral=True)
     except requests.exceptions.HTTPError as e:
         status_code = getattr(e.response, 'status_code', 'Unknown')
         error_msg = f"HTTP Error {status_code}"
@@ -132,7 +191,9 @@ async def schedule(interaction: discord.Interaction, date: str = "今日", days:
             return
         
         # イベントをフォーマット
-        lines = [f"**{date}の予定**\n"]
+        lines = [f"**📅 {date}の予定**\n"]
+        calendar_links = []
+        
         for ev in events:
             title = ev.get('title', 'タイトルなし')
             start = ev.get('start', '')
@@ -148,9 +209,18 @@ async def schedule(interaction: discord.Interaction, date: str = "今日", days:
             else:
                 end_time = end
             
-            lines.append(f"{title} {start_time}-{end_time}")
+            lines.append(f"• {title} `{start_time}-{end_time}`")
+            
+            # Googleカレンダーリンクを生成
+            calendar_url = generate_calendar_link(title, start, end)
+            calendar_links.append(f"📅 [{title}](<{calendar_url}>)")
         
         result = "\n".join(lines)
+        
+        # カレンダーリンクを追加
+        if calendar_links:
+            result += "\n\n**🔗 Googleカレンダーで開く:**\n" + "\n".join(calendar_links)
+        
         await interaction.followup.send(result, ephemeral=True)
         
     except requests.exceptions.HTTPError as e:
