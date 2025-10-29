@@ -1,0 +1,27 @@
+# Bot files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+.env.local
+.env.development
+.env.test
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Virtual environment (not needed in Docker)
+.venv/
+venv/
