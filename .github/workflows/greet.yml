@@ -1,0 +1,39 @@
+name: Greet New Contributors
+
+on:
+  issues:
+    types: [opened]
+  pull_requests:
+    types: [opened]
+
+jobs:
+  greet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/first-interaction@v1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          issue-message: |
+            🎉 **Thank you for your first issue!** 
+            
+            Welcome to the Discord Calendar Bot community! We appreciate you taking the time to report this issue.
+            
+            A maintainer will review your issue soon. In the meantime:
+            - ⭐ Consider starring this repository if you find it useful
+            - 📚 Check our [Contributing Guidelines](CONTRIBUTING.md) if you're interested in helping
+            - 💬 Join discussions in our [Discussions](https://github.com/Nodee-1014/discord-calendar-bot/discussions) section
+            
+            Thanks for helping make Discord Calendar Bot better! 🚀
+          pr-message: |
+            🎉 **Thank you for your first Pull Request!**
+            
+            Welcome to the Discord Calendar Bot project! We're excited to review your contribution.
+            
+            Please make sure:
+            - ✅ Your changes follow our [Contributing Guidelines](CONTRIBUTING.md)
+            - ✅ You've tested your changes locally
+            - ✅ Your commit messages are clear and descriptive
+            
+            A maintainer will review your PR soon. Thanks for contributing! 🚀
+            
+            ⭐ Don't forget to star the repo if you haven't already!
