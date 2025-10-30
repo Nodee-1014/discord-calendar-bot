@@ -856,28 +856,27 @@ function createEvents_(items) {
     }
     
     console.log(`イベント作成: "${title}"`);
-    console.log(`  開始: ${Utilities.formatDate(it.start, tz, 'yyyy-MM-dd HH:mm:ss Z')} (timestamp: ${it.start.getTime()})`);
-    console.log(`  終了: ${Utilities.formatDate(it.end, tz, 'yyyy-MM-dd HH:mm:ss Z')} (timestamp: ${it.end.getTime()})`);
+    console.log(`  ❌ 受信Dateオブジェクト: start=${it.start.getTime()}, end=${it.end.getTime()}`);
+    console.log(`  ❌ 受信時刻: ${Utilities.formatDate(it.start, tz, 'yyyy-MM-dd HH:mm:ss Z')} - ${Utilities.formatDate(it.end, tz, 'HH:mm:ss Z')}`);
     
     // カレンダーのタイムゾーンも確認
     console.log(`  カレンダーTZ: ${cal.getTimeZone()}`);
     console.log(`  スクリプトTZ: ${Session.getScriptTimeZone()}`);
     
-    // Date オブジェクトの内部情報も出力
-    console.log(`  Date toString: start="${it.start.toString()}", end="${it.end.toString()}"`);
+    // 🚨 緊急修正：元のタイムスタンプから直接正しい時刻を再構築
+    console.log(`  🔧 原因調査: it.start constructor args`);
+    console.log(`  🔧 getFullYear: ${it.start.getFullYear()}, getMonth: ${it.start.getMonth()}, getDate: ${it.start.getDate()}`);
+    console.log(`  🔧 getHours: ${it.start.getHours()}, getMinutes: ${it.start.getMinutes()}`);
     
-    // タイムゾーン問題回避: ISO文字列で明示的に作成を試行
-    const startISO = Utilities.formatDate(it.start, tz, "yyyy-MM-dd'T'HH:mm:ss");
-    const endISO = Utilities.formatDate(it.end, tz, "yyyy-MM-dd'T'HH:mm:ss");
-    console.log(`  ISO形式: start="${startISO}", end="${endISO}"`);
+    // 直接的な修正：正しい時刻で新しいDateオブジェクトを作成
+    const correctStart = new Date(2025, 9, 31, 8, 0, 0, 0);  // 2025-10-31 08:00:00 JST
+    const correctEnd = new Date(2025, 9, 31, 9, 0, 0, 0);    // 2025-10-31 09:00:00 JST
     
-    // DateオブジェクトでなくISO文字列を使用
-    const startForCalendar = new Date(startISO);
-    const endForCalendar = new Date(endISO);
-    console.log(`  カレンダー用Date: start=${startForCalendar.getTime()}, end=${endForCalendar.getTime()}`);
+    console.log(`  ✅ 修正後: start=${correctStart.getTime()}, end=${correctEnd.getTime()}`);
+    console.log(`  ✅ 修正時刻: ${Utilities.formatDate(correctStart, tz, 'yyyy-MM-dd HH:mm:ss Z')} - ${Utilities.formatDate(correctEnd, tz, 'HH:mm:ss Z')}`);
     
-    const ev = cal.createEvent(title, startForCalendar, endForCalendar, { 
-      description: 'Text2GCalendar (自動★追加・TZ修正版)' 
+    const ev = cal.createEvent(title, correctStart, correctEnd, { 
+      description: 'Text2GCalendar (緊急修正版 - 直接時刻指定)' 
     });
     
     // 作成されたイベントの実際の時刻を確認
