@@ -836,6 +836,9 @@ function parseDateToken_(token, now) {
 function createEvents_(items) {
   const out = [];
   const cal = CalendarApp.getDefaultCalendar();
+  const tz = SETTINGS.TIMEZONE;
+  
+  console.log(`\n=== カレンダーイベント作成開始 (${items.length}件) ===`);
   
   for (const it of items) {
     let title = it.title;
@@ -852,9 +855,18 @@ function createEvents_(items) {
       }
     }
     
+    console.log(`イベント作成: "${title}"`);
+    console.log(`  開始: ${Utilities.formatDate(it.start, tz, 'yyyy-MM-dd HH:mm:ss Z')} (timestamp: ${it.start.getTime()})`);
+    console.log(`  終了: ${Utilities.formatDate(it.end, tz, 'yyyy-MM-dd HH:mm:ss Z')} (timestamp: ${it.end.getTime()})`);
+    
     const ev = cal.createEvent(title, it.start, it.end, { 
       description: 'Text2GCalendar (自動★追加)' 
     });
+    
+    // 作成されたイベントの実際の時刻を確認
+    const createdStart = ev.getStartTime();
+    const createdEnd = ev.getEndTime();
+    console.log(`  実際の作成: ${Utilities.formatDate(createdStart, tz, 'yyyy-MM-dd HH:mm:ss Z')} - ${Utilities.formatDate(createdEnd, tz, 'HH:mm:ss Z')}`);
     
     out.push({ 
       eventId: ev.getId(), 
@@ -863,6 +875,8 @@ function createEvents_(items) {
       end: it.end 
     });
   }
+  
+  console.log(`=== カレンダーイベント作成完了 ===\n`);
   return out;
 }
 
@@ -899,7 +913,7 @@ function renderLines_(arr) {
 
 /**
  * 指定した日付と時刻でDateオブジェクトを作成（タイムゾーン考慮）
- * Google Apps Scriptのタイムゾーン設定に従ってDateオブジェクトを作成します
+ * Google Apps Scriptのスクリプトタイムゾーン（Asia/Tokyo）でDateオブジェクトを作成
  * @param {Date} baseDate - 基準日付
  * @param {string} hhmm - 時刻（HH:MM形式）
  * @param {string} tz - タイムゾーン（'Asia/Tokyo'など）
@@ -908,21 +922,18 @@ function renderLines_(arr) {
 function dateAt_(baseDate, hhmm, tz) {
   const [hours, minutes] = hhmm.split(':').map(Number);
   
-  // baseDateからyyyy-MM-dd形式の日付文字列を取得
+  // Google Apps Scriptのスクリプトタイムゾーンで動作する
+  // new Date()はスクリプトのタイムゾーン設定（appsscript.jsonのtimeZone）を使用
   const year = baseDate.getFullYear();
-  const month = baseDate.getMonth() + 1; // 0-indexedなので+1
+  const month = baseDate.getMonth();
   const day = baseDate.getDate();
   
-  // 日時文字列を作成（ISO 8601形式だが、タイムゾーンオフセットなし）
-  const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-  const timeStr = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
+  // ローカル時刻として作成（スクリプトタイムゾーン = Asia/Tokyo）
+  const result = new Date(year, month, day, hours, minutes, 0, 0);
   
-  // Google Apps Scriptの内部タイムゾーンでDateオブジェクトを作成
-  // Utilities.formatDate()を逆方向に使用してパース
-  const isoString = `${dateStr}T${timeStr}+09:00`; // 日本時間のオフセット
-  const result = new Date(isoString);
+  console.log(`dateAt_: 入力=${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')} ${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')} (${tz})`);
+  console.log(`dateAt_: 出力=${Utilities.formatDate(result, tz, 'yyyy-MM-dd HH:mm:ss Z')}, timestamp=${result.getTime()}`);
   
-  console.log(`dateAt_: 入力=${dateStr} ${timeStr} (${tz}), 出力=${Utilities.formatDate(result, tz, 'yyyy-MM-dd HH:mm:ss Z')}, getTime=${result.getTime()}`);
   return result;
 }
 
