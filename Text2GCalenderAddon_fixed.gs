@@ -859,6 +859,13 @@ function createEvents_(items) {
     console.log(`  開始: ${Utilities.formatDate(it.start, tz, 'yyyy-MM-dd HH:mm:ss Z')} (timestamp: ${it.start.getTime()})`);
     console.log(`  終了: ${Utilities.formatDate(it.end, tz, 'yyyy-MM-dd HH:mm:ss Z')} (timestamp: ${it.end.getTime()})`);
     
+    // カレンダーのタイムゾーンも確認
+    console.log(`  カレンダーTZ: ${cal.getTimeZone()}`);
+    console.log(`  スクリプトTZ: ${Session.getScriptTimeZone()}`);
+    
+    // Date オブジェクトの内部情報も出力
+    console.log(`  Date toString: start="${it.start.toString()}", end="${it.end.toString()}"`);
+    
     const ev = cal.createEvent(title, it.start, it.end, { 
       description: 'Text2GCalendar (自動★追加)' 
     });
@@ -867,6 +874,7 @@ function createEvents_(items) {
     const createdStart = ev.getStartTime();
     const createdEnd = ev.getEndTime();
     console.log(`  実際の作成: ${Utilities.formatDate(createdStart, tz, 'yyyy-MM-dd HH:mm:ss Z')} - ${Utilities.formatDate(createdEnd, tz, 'HH:mm:ss Z')}`);
+    console.log(`  実際作成TS: start=${createdStart.getTime()}, end=${createdEnd.getTime()}`);
     
     out.push({ 
       eventId: ev.getId(), 
