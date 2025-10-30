@@ -1,0 +1,905 @@
+/* Text2GCalendar (Calendar Add-on) — 既存予定回避機能追加版
+ * 新機能：
+ * - 既存のカレンダー予定を読み込み
+ * - 予定が入っている時間を自動的に回避
+ * - 空き時間に自動配置
+ */
+
+const SETTINGS = {
+  TIMEZONE: 'Asia/Tokyo',
+  WORK_START: '09:00',
+  WORK_END:   '19:00',
+  GAP_MIN: 5,
+  LOOKAHEAD_DAYS: 30,
+};
+const PRIORITY_ORDER = { 'A': 1, 'B': 2, 'C': 3 };
+
+
+/** ========== 週間レポート機能 ========== */
+
+/**
+ * 週間レポートを生成
+ */
+function generateWeeklyReport_(startDate, endDate) {
+  const tz = SETTINGS.TIMEZONE;
+  const cal = CalendarApp.getDefaultCalendar();
+  const events = cal.getEvents(startDate, endDate);
+  
+  // 優先度別の集計
+  const stats = {
+    total: 0,
+    byPriority: { A: 0, B: 0, C: 0, other: 0 },
+    byDay: {},
+    events: []
+  };
+  
+  events.forEach(ev => {
+    const title = ev.getTitle();
+    const start = ev.getStartTime();
+    const end = ev.getEndTime();
+    const duration = (end - start) / (1000 * 60 * 60); // 時間単位
+    
+    // 優先度を推測（タイトルから★を検索）
+    let priority = 'other';
+    if (title.includes('★★★')) priority = 'A';
+    else if (title.includes('★★')) priority = 'B';
+    else if (title.includes('★')) priority = 'C';
+    
+    stats.total += duration;
+    stats.byPriority[priority] += duration;
+    
+    // 日別集計
+    const dayKey = Utilities.formatDate(start, tz, 'yyyy-MM-dd');
+    if (!stats.byDay[dayKey]) stats.byDay[dayKey] = 0;
+    stats.byDay[dayKey] += duration;
+    
+    stats.events.push({
+      title: title,
+      start: Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm'),
+      end: Utilities.formatDate(end, tz, 'HH:mm'),
+      duration: duration.toFixed(1)
+    });
+  });
+  
+  return stats;
+}
+
+
+/** ========== スケジュール取得機能 ========== */
+
+/**
+ * 指定日のカレンダー予定を取得してテキスト形式で返す
+ */
+function getScheduleForDate_(dateStr, daysCount) {
+  const tz = SETTINGS.TIMEZONE;
+  const now = new Date();
+  
+  // 日付文字列を解析
+  let targetDate;
+  if (dateStr === '今日' || dateStr === 'today') {
+    targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  } else if (dateStr === '明日' || dateStr === 'tomorrow') {
+    targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  } else if (dateStr === '明後日') {
+    targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2);
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    const [Y, M, D] = dateStr.split('-').map(Number);
+    targetDate = new Date(Y, M - 1, D);
+  } else if (/^\d{1,2}\/\d{1,2}$/.test(dateStr)) {
+    const [M, D] = dateStr.split('/').map(Number);
+    targetDate = new Date(now.getFullYear(), M - 1, D);
+  } else {
+    targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  }
+  
+  // 開始・終了日時を設定
+  const startDate = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0);
+  const endDate = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate() + daysCount, 23, 59, 59);
+  
+  // カレンダーから予定を取得
+  const cal = CalendarApp.getDefaultCalendar();
+  const events = cal.getEvents(startDate, endDate);
+  
+  // イベントを時刻順にソート
+  events.sort((a, b) => a.getStartTime() - b.getStartTime());
+  
+  // 結果を整形
+  const result = events.map(ev => {
+    const start = ev.getStartTime();
+    const end = ev.getEndTime();
+    
+    return {
+      title: ev.getTitle(),
+      start: Utilities.formatDate(start, tz, "yyyy-MM-dd'T'HH:mm:ss"),
+      end: Utilities.formatDate(end, tz, "yyyy-MM-dd'T'HH:mm:ss"),
+      startTime: Utilities.formatDate(start, tz, "HH:mm"),
+      endTime: Utilities.formatDate(end, tz, "HH:mm")
+    };
+  });
+  
+  return result;
+}
+// ===== 既存予定取得機能 =====
+
+/**
+ * 指定期間の既存カレンダーイベントを取得
+ */
+function getExistingEvents_(startDate, endDate) {
+  const cal = CalendarApp.getDefaultCalendar();
+  const events = cal.getEvents(startDate, endDate);
+  return events.map(ev => ({
+    title: ev.getTitle(),
+    start: ev.getStartTime(),
+    end: ev.getEndTime()
+  }));
+}
+
+/**
+ * 指定時間が既存イベントと重複しているかチェック
+ */
+function isTimeSlotAvailable_(checkStart, checkEnd, existingEvents) {
+  for (const ev of existingEvents) {
+    const evStart = new Date(ev.start);
+    const evEnd = new Date(ev.end);
+    
+    // 重複チェック: 
+    // 新しい予定の開始が既存予定の範囲内、または
+    // 新しい予定の終了が既存予定の範囲内、または
+    // 新しい予定が既存予定を完全に包含する場合
+    if ((checkStart >= evStart && checkStart < evEnd) ||
+        (checkEnd > evStart && checkEnd <= evEnd) ||
+        (checkStart <= evStart && checkEnd >= evEnd)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * 次の空き時間を見つける
+ */
+function findNextAvailableSlot_(cursor, dayEnd, minutes, tz, existingEvents, maxTries = 100) {
+  let cur = new Date(cursor);
+  let tries = 0;
+  
+  while (tries < maxTries) {
+    const end = new Date(cur.getTime() + minutes * 60000);
+    
+    // 営業時間を超える場合は翌日へ
+    if (end > dayEnd) {
+      const next = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + 1);
+      const nextStart = dateAt_(next, SETTINGS.WORK_START, tz);
+      const nextEnd = dateAt_(next, SETTINGS.WORK_END, tz);
+      cur = nextStart;
+      dayEnd = nextEnd;
+      
+      // 翌日の既存予定を追加取得
+      const tomorrow = new Date(next);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const newEvents = getExistingEvents_(next, tomorrow);
+      existingEvents.push(...newEvents);
+      
+      tries++;
+      continue;
+    }
+    
+    // この時間帯が空いているかチェック
+    if (isTimeSlotAvailable_(cur, end, existingEvents)) {
+      const newCursor = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
+      return { start: cur, end, cursorDate: newCursor, dayEnd };
+    }
+    
+    // 空いていない場合、既存予定の終了時刻 + GAP_MIN に移動
+    let nextStart = null;
+    for (const ev of existingEvents) {
+      const evEnd = new Date(ev.end);
+      if (evEnd > cur && (!nextStart || evEnd < nextStart)) {
+        nextStart = new Date(evEnd.getTime() + SETTINGS.GAP_MIN * 60000);
+      }
+    }
+    
+    if (nextStart && nextStart < dayEnd) {
+      cur = nextStart;
+    } else {
+      // 次の候補がない場合、5分進める
+      cur = new Date(cur.getTime() + SETTINGS.GAP_MIN * 60000);
+    }
+    
+    tries++;
+  }
+  
+  throw new Error('空き時間が見つかりません（最大試行回数超過）');
+}
+
+// ===== Core Planning（既存予定回避版） =====
+
+function planFromRaw_(raw, previewOnly) {
+  const tz = SETTINGS.TIMEZONE;
+  const now = new Date();
+  let cursorDate = dateAt_(now, SETTINGS.WORK_START, tz);
+  let dayEnd = dateAt_(now, SETTINGS.WORK_END, tz);
+  
+  const lookAheadEnd = new Date(now);
+  lookAheadEnd.setDate(lookAheadEnd.getDate() + SETTINGS.LOOKAHEAD_DAYS);
+  const existingEvents = getExistingEvents_(now, lookAheadEnd);
+  
+  console.log(`既存予定: ${existingEvents.length}件取得`);
+
+  const lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  let parsedTasks = [];
+  let idx = 0;
+
+  for (const line0 of lines) {
+    idx++;
+    if (/^~~.*~~$/.test(line0)) continue;
+
+    const parsed = parseLine_(line0, now);
+    if (!parsed || !parsed.minutes) continue;
+
+    parsedTasks.push({
+      order: idx,
+      title: parsed.title,
+      minutes: parsed.minutes,
+      priority: PRIORITY_ORDER[parsed.priority] || 3,
+      priorityLabel: parsed.priority,  // 追加: A/B/C のラベルを保持
+      dayAnchor: parsed.dayAnchor,
+      fixedStart: parsed.fixedStart
+    });
+  }
+
+  parsedTasks.sort((a,b)=>{
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return a.order - b.order;
+  });
+
+  const items = [];
+  const preview = [];
+  
+  for (const p of parsedTasks) {
+    let start, end;
+    
+    if (p.fixedStart) {
+      start = p.fixedStart;
+      end = new Date(start.getTime() + p.minutes * 60000);
+      
+      if (!isTimeSlotAvailable_(start, end, existingEvents)) {
+        console.log(`警告: "${p.title}" は既存予定と重複しています（${start} - ${end}）`);
+      }
+      
+      cursorDate = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
+      dayEnd = dateAt_(cursorDate, SETTINGS.WORK_END, tz);
+    } else {
+      if (p.dayAnchor) {
+        const base = dateAt_(p.dayAnchor, SETTINGS.WORK_START, tz);
+        if (cursorDate < base) {
+          cursorDate = base;
+          dayEnd = dateAt_(p.dayAnchor, SETTINGS.WORK_END, tz);
+        }
+      }
+      
+      ({start, end, cursorDate, dayEnd} = findNextAvailableSlot_(
+        cursorDate, dayEnd, p.minutes, tz, existingEvents
+      ));
+    }
+    
+    const item = { 
+      title: p.title, 
+      minutes: p.minutes, 
+      start, 
+      end,
+      priority: p.priority,           // 追加
+      priorityLabel: p.priorityLabel  // 追加
+    };
+    items.push(item);
+    preview.push({ 
+      title: item.title, 
+      start: item.start, 
+      end: item.end 
+    });
+  }
+
+  return { items, preview };
+}
+
+// ===== 既存のヘルパー関数はそのまま =====
+
+function parseLine_(line, now) {
+  const tz = SETTINGS.TIMEZONE;
+
+  const hr = line.match(/(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours|時間)\b/i);
+  const mn = line.match(/(\d+)\s*(?:m|min|mins|minute|minutes|分)\b/i);
+  let minutes = null;
+  if (hr) minutes = Math.round(parseFloat(hr[1]) * 60);
+  else if (mn) minutes = parseInt(mn[1], 10);
+  if (!minutes || minutes <= 0) return null;
+
+  // 日付
+  let dayAnchor = null;
+  const mDate = line.match(/@([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}\/[0-9]{1,2}|今日|明日|明後日|月|火|水|木|金|土|日)/);
+  if (mDate) {
+    dayAnchor = parseDateToken_(mDate[1], now);
+    line = line.replace('@' + mDate[1], '').trim();
+  }
+
+  // 時刻
+  let fixedStart = null;
+  const mTime = line.match(/@(午前|午後)?\s?(\d{1,2})(?:[:：](\d{2}))?時?|@(\d{1,2}):(\d{2})/);
+  if (mTime) {
+    if (mTime[4]) {
+      const H = parseInt(mTime[4], 10);
+      const M = parseInt(mTime[5], 10);
+      const base = dayAnchor || now;
+      fixedStart = new Date(base.getFullYear(), base.getMonth(), base.getDate(), H, M, 0, 0);
+    } else {
+      let H = parseInt(mTime[2], 10);
+      const ampm = mTime[1];
+      if (ampm === '午後' && H < 12) H += 12;
+      if (ampm === '午前' && H === 12) H = 0;
+      const base = dayAnchor || now;
+      fixedStart = new Date(base.getFullYear(), base.getMonth(), base.getDate(), H, 0, 0, 0);
+    }
+    line = line.replace(/@(午前|午後)?\s?\d{1,2}(?::\d{2})?時?/, '').replace(/@\d{1,2}:\d{2}/, '').trim();
+  }
+
+  // 優先度の抽出（★または A/B/C）
+  let priority = 'C';
+  
+  // ★の数を数える（★★★ = A, ★★ = B, ★ = C）
+  const starMatch = line.match(/★{1,3}\s*$/);
+  if (starMatch) {
+    const starCount = starMatch[0].replace(/\s/g, '').length;
+    if (starCount === 3) priority = 'A';
+    else if (starCount === 2) priority = 'B';
+    else priority = 'C';
+    line = line.replace(/★{1,3}\s*$/, '').trim();
+  } else {
+    // 従来のA/B/C表記もサポート
+    const tagM = line.match(/\s([ABC])\s*$/i);
+    if (tagM) {
+      priority = tagM[1].toUpperCase();
+      line = line.replace(/\s[ABC]\s*$/i, '').trim();
+    }
+  }
+
+  let title = line
+    .replace(/(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours|時間)\b/ig, '')
+    .replace(/(\d+)\s*(?:m|min|mins|minute|minutes|分)\b/ig, '')
+    .replace(/@\S+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (!title) title = 'Untitled Task';
+
+  return { title, minutes, dayAnchor, fixedStart, priority };
+}
+
+function parseDateToken_(token, now) {
+  const map = { '日':0,'月':1,'火':2,'水':3,'木':4,'金':5,'土':6 };
+  if (token === '今日') return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (token === '明日') return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  if (token === '明後日') return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2);
+  if (map.hasOwnProperty(token)) {
+    const targetW = map[token];
+    const curW = now.getDay();
+    let delta = (targetW - curW + 7) % 7;
+    if (delta === 0) delta = 7;
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate() + delta);
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(token)) {
+    const [Y,M,D] = token.split('-').map(Number);
+    return new Date(Y, M-1, D);
+  }
+  if (/^\d{1,2}\/\d{1,2}$/.test(token)) {
+    const [M,D] = token.split('/').map(Number);
+    return new Date(now.getFullYear(), M-1, D);
+  }
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+function createEvents_(items) {
+  const out = [];
+  const cal = CalendarApp.getDefaultCalendar();
+  
+  for (const it of items) {
+    let title = it.title;
+    
+    // タイトルに★がない場合、優先度に応じて自動追加
+    if (!title.includes('★')) {
+      const priorityLabel = it.priorityLabel || 'C';
+      if (priorityLabel === 'A') {
+        title = title + ' ★★★';
+      } else if (priorityLabel === 'B') {
+        title = title + ' ★★';
+      } else if (priorityLabel === 'C') {
+        title = title + ' ★';
+      }
+    }
+    
+    const ev = cal.createEvent(title, it.start, it.end, { 
+      description: 'Text2GCalendar (自動★追加)' 
+    });
+    
+    out.push({ 
+      eventId: ev.getId(), 
+      title: title,  // ★付きのタイトルを返す
+      start: it.start, 
+      end: it.end 
+    });
+  }
+  return out;
+}
+
+function storeUndoBuffer_(created) {
+  PropertiesService.getUserProperties().setProperty('lastRun', JSON.stringify(created));
+}
+
+function undoLastRun_() {
+  const buf = PropertiesService.getUserProperties().getProperty('lastRun');
+  if (!buf) return '直前の作成記録がありません。';
+  const items = JSON.parse(buf);
+  let ok = 0, ng = 0;
+  const cal = CalendarApp.getDefaultCalendar();
+  for (const it of items) {
+    try {
+      const ev = cal.getEventById(it.eventId);
+      if (ev) { ev.deleteEvent(); ok++; } else { ng++; }
+    } catch (e) { ng++; }
+  }
+  PropertiesService.getUserProperties().deleteProperty('lastRun');
+  return `削除完了: ${ok}件 / 失敗: ${ng}件`;
+}
+
+function renderLines_(arr) {
+  const tz = SETTINGS.TIMEZONE;
+  return arr.map(x =>
+    `${x.title}: ` +
+    `${Utilities.formatDate(new Date(x.start), tz, 'yyyy-MM-dd HH:mm')}–` +
+    `${Utilities.formatDate(new Date(x.end),   tz, 'HH:mm')}`
+  ).join('\n');
+}
+
+function dateAt_(baseDate, hhmm, tz) {
+  const base = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
+  const [H,M] = hhmm.split(':').map(Number);
+  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate(), H, M, 0, 0);
+  const iso = Utilities.formatDate(d, tz, "yyyy-MM-dd'T'HH:mm:ss");
+  return new Date(iso);
+}
+
+// ===== Add-on UI（変更なし） =====
+// ===== Web API（変更なし） =====
+// ※ 既存のUI関数とdoPost/doGet関数はそのまま使用
+
+// ===== Add-on UI =====
+
+function onHomepage(e) {
+  return buildHomeCard_('Text2GCalendar', '');
+}
+
+function buildHomeCard_(title, message) {
+  const cs = CardService;
+  const textInput = cs.newTextInput()
+    .setFieldName('raw')
+    .setMultiline(true)
+    .setTitle('タスク（改行＝1件）')
+    .setValue('');
+
+  const btnPreview = cs.newTextButton()
+    .setText('プレビュー')
+    .setOnClickAction(cs.newAction().setFunctionName('handlePreview'));
+
+  const btnCreate = cs.newTextButton()
+    .setText('作成')
+    .setOnClickAction(cs.newAction().setFunctionName('handleCreate'));
+
+  const btnUndo = cs.newTextButton()
+    .setText('直前の作成をUndo')
+    .setOnClickAction(cs.newAction().setFunctionName('handleUndo'));
+
+  const btnRow = cs.newButtonSet().addButton(btnPreview).addButton(btnCreate).addButton(btnUndo);
+
+  const sec = cs.newCardSection().addWidget(textInput).addWidget(btnRow);
+  if (message) sec.addWidget(cs.newKeyValue().setContent(message));
+
+  return cs.newCardBuilder()
+    .setHeader(cs.newCardHeader().setTitle(title))
+    .addSection(sec)
+    .build();
+}
+
+function handlePreview(e) {
+  const raw = (e.commonEventObject.formInputs.raw || {}).stringInputs?.value?.[0] || '';
+  if (!raw.trim()) {
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation().updateCard(buildHomeCard_('Text2GCalendar', 'テキストが空です。')))
+      .build();
+  }
+  const plan = planFromRaw_(raw, true);
+  const previewText = renderLines_(plan.preview);
+  return showResult_(previewText || '有効なタスクが見つかりません。');
+}
+
+function handleCreate(e) {
+  const raw = (e.commonEventObject.formInputs.raw || {}).stringInputs?.value?.[0] || '';
+  if (!raw.trim()) {
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation().updateCard(buildHomeCard_('Text2GCalendar', 'テキストが空です。')))
+      .build();
+  }
+  const plan = planFromRaw_(raw, false);
+  const created = createEvents_(plan.items);
+  storeUndoBuffer_(created);
+  const msg = created.length ? ('作成しました。\n\n' + renderLines_(created.map(x => ({
+    title: x.title, start: x.start, end: x.end
+  })))) : '作成対象がありません。';
+  return showResult_(msg);
+}
+
+function handleUndo(_) {
+  const res = undoLastRun_();
+  return showResult_(res);
+}
+
+function showResult_(text) {
+  const cs = CardService;
+  const sec = cs.newCardSection()
+    .addWidget(cs.newTextParagraph().setText(text.replace(/\n/g, '<br>')));
+  const backBtn = cs.newTextButton()
+    .setText('戻る')
+    .setOnClickAction(cs.newAction().setFunctionName('goHome_'));
+  const header = cs.newCardHeader().setTitle('Text2GCalendar');
+  return cs.newActionResponseBuilder()
+    .setNavigation(cs.newNavigation().pushCard(
+      cs.newCardBuilder().setHeader(header).addSection(sec).addSection(
+        cs.newCardSection().addWidget(backBtn)
+      ).build()
+    ))
+    .build();
+}
+
+function goHome_() {
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().popToRoot().updateCard(buildHomeCard_('Text2GCalendar', '')))
+    .build();
+}
+
+// ===== Core Planning =====
+
+function planFromRaw_(raw, previewOnly) {
+  const tz = SETTINGS.TIMEZONE;
+  const now = new Date();
+  let cursorDate = dateAt_(now, SETTINGS.WORK_START, tz);
+  let dayEnd = dateAt_(now, SETTINGS.WORK_END, tz);
+
+  const lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  let parsedTasks = [];
+  let idx = 0;
+
+  for (const line0 of lines) {
+    idx++;
+    if (/^~~.*~~$/.test(line0)) continue;
+
+    let line = line0;
+    let pr = 'C'; // デフォルト優先度
+    const tagM = line.match(/\s([ABC])\s*$/i);
+    if (tagM) {
+      pr = tagM[1].toUpperCase();
+      line = line.replace(/\s[ABC]\s*$/i, '').trim();
+    }
+
+    const parsed = parseLine_(line, now);
+    if (!parsed || !parsed.minutes) continue;
+
+    parsedTasks.push({
+      order: idx, // 同優先度内の元順序維持
+      title: parsed.title,
+      minutes: parsed.minutes,
+      priority: PRIORITY_ORDER[pr] || 3,
+      dayAnchor: parsed.dayAnchor,
+      fixedStart: parsed.fixedStart
+    });
+  }
+
+  // 優先度→元順でソート
+  parsedTasks.sort((a,b)=>{
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return a.order - b.order;
+  });
+
+  const items = [];
+  const preview = [];
+  for (const p of parsedTasks) {
+    let start, end;
+    if (p.fixedStart) {
+      start = p.fixedStart;
+      end = new Date(start.getTime() + p.minutes * 60000);
+      cursorDate = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
+      dayEnd = dateAt_(cursorDate, SETTINGS.WORK_END, tz);
+    } else {
+      if (p.dayAnchor) {
+        const base = dateAt_(p.dayAnchor, SETTINGS.WORK_START, tz);
+        if (cursorDate < base) {
+          cursorDate = base;
+          dayEnd = dateAt_(p.dayAnchor, SETTINGS.WORK_END, tz);
+        }
+      }
+      ({start, end, cursorDate, dayEnd} = placeWithinWorkHours_(cursorDate, dayEnd, p.minutes, tz));
+    }
+    const item = { title: p.title, minutes: p.minutes, start, end };
+    items.push(item);
+    preview.push({ title: item.title, start: item.start, end: item.end });
+  }
+
+  return { items, preview };
+}
+
+function placeWithinWorkHours_(cursor, dayEnd, minutes, tz) {
+  let cur = new Date(cursor);
+  let end = new Date(cur.getTime() + minutes * 60000);
+  let tries = 0;
+  while (end > dayEnd) {
+    const next = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + 1);
+    const nextStart = dateAt_(next, SETTINGS.WORK_START, tz);
+    const nextEnd   = dateAt_(next, SETTINGS.WORK_END, tz);
+    cur = nextStart;
+    end = new Date(cur.getTime() + minutes * 60000);
+    dayEnd = nextEnd;
+    tries++;
+    if (tries > SETTINGS.LOOKAHEAD_DAYS) throw new Error('空き枠が見つかりません（LOOKAHEAD超過）');
+  }
+  const newCursor = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
+  return { start: cur, end, cursorDate: newCursor, dayEnd };
+}
+
+// ===== Parsing =====
+
+function parseLine_(line, now) {
+  const tz = SETTINGS.TIMEZONE;
+
+  const hr = line.match(/(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours|時間)\b/i);
+  const mn = line.match(/(\d+)\s*(?:m|min|mins|minute|minutes|分)\b/i);
+  let minutes = null;
+  if (hr) minutes = Math.round(parseFloat(hr[1]) * 60);
+  else if (mn) minutes = parseInt(mn[1], 10);
+  if (!minutes || minutes <= 0) return null;
+
+  // 日付
+  let dayAnchor = null;
+  const mDate = line.match(/@([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}\/[0-9]{1,2}|今日|明日|明後日|月|火|水|木|金|土|日)/);
+  if (mDate) {
+    dayAnchor = parseDateToken_(mDate[1], now);
+    line = line.replace('@' + mDate[1], '').trim();
+  }
+
+  // 時刻
+  let fixedStart = null;
+  const mTime = line.match(/@(午前|午後)?\s?(\d{1,2})(?:[:：](\d{2}))?時?|@(\d{1,2}):(\d{2})/);
+  if (mTime) {
+    if (mTime[4]) {
+      const H = parseInt(mTime[4], 10);
+      const M = parseInt(mTime[5], 10);
+      const base = dayAnchor || now;
+      fixedStart = new Date(base.getFullYear(), base.getMonth(), base.getDate(), H, M, 0, 0);
+    } else {
+      let H = parseInt(mTime[2], 10);
+      const ampm = mTime[1];
+      if (ampm === '午後' && H < 12) H += 12;
+      if (ampm === '午前' && H === 12) H = 0;
+      const base = dayAnchor || now;
+      fixedStart = new Date(base.getFullYear(), base.getMonth(), base.getDate(), H, 0, 0, 0);
+    }
+    line = line.replace(/@(午前|午後)?\s?\d{1,2}(?::\d{2})?時?/, '').replace(/@\d{1,2}:\d{2}/, '').trim();
+  }
+
+  let title = line
+    .replace(/(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours|時間)\b/ig, '')
+    .replace(/(\d+)\s*(?:m|min|mins|minute|minutes|分)\b/ig, '')
+    .replace(/@\S+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (!title) title = 'Untitled Task';
+
+  return { title, minutes, dayAnchor, fixedStart };
+}
+
+function parseDateToken_(token, now) {
+  const map = { '日':0,'月':1,'火':2,'水':3,'木':4,'金':5,'土':6 };
+  if (token === '今日') return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (token === '明日') return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  if (token === '明後日') return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2);
+  if (map.hasOwnProperty(token)) {
+    const targetW = map[token];
+    const curW = now.getDay();
+    let delta = (targetW - curW + 7) % 7;
+    if (delta === 0) delta = 7;
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate() + delta);
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(token)) {
+    const [Y,M,D] = token.split('-').map(Number);
+    return new Date(Y, M-1, D);
+  }
+  if (/^\d{1,2}\/\d{1,2}$/.test(token)) {
+    const [M,D] = token.split('/').map(Number);
+    return new Date(now.getFullYear(), M-1, D);
+  }
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+// ===== Create / Undo =====
+
+function createEvents_(items) {
+  const out = [];
+  const cal = CalendarApp.getDefaultCalendar();
+  for (const it of items) {
+    const ev = cal.createEvent(it.title, it.start, it.end, { description: 'Text2GCalendar (Add-on)' });
+    out.push({ eventId: ev.getId(), title: it.title, start: it.start, end: it.end });
+  }
+  return out;
+}
+
+function storeUndoBuffer_(created) {
+  PropertiesService.getUserProperties().setProperty('lastRun', JSON.stringify(created));
+}
+
+function undoLastRun_() {
+  const buf = PropertiesService.getUserProperties().getProperty('lastRun');
+  if (!buf) return '直前の作成記録がありません。';
+  const items = JSON.parse(buf);
+  let ok = 0, ng = 0;
+  const cal = CalendarApp.getDefaultCalendar();
+  for (const it of items) {
+    try {
+      const ev = cal.getEventById(it.eventId);
+      if (ev) { ev.deleteEvent(); ok++; } else { ng++; }
+    } catch (e) { ng++; }
+  }
+  PropertiesService.getUserProperties().deleteProperty('lastRun');
+  return `削除完了: ${ok}件 / 失敗: ${ng}件`;
+}
+
+// ===== Helpers =====
+
+function renderLines_(arr) {
+  const tz = SETTINGS.TIMEZONE;
+  return arr.map(x =>
+    `${x.title}: ` +
+    `${Utilities.formatDate(new Date(x.start), tz, 'yyyy-MM-dd HH:mm')}–` +
+    `${Utilities.formatDate(new Date(x.end),   tz, 'HH:mm')}`
+  ).join('\n');
+}
+
+function dateAt_(baseDate, hhmm, tz) {
+  const base = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
+  const [H,M] = hhmm.split(':').map(Number);
+  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate(), H, M, 0, 0);
+  const iso = Utilities.formatDate(d, tz, "yyyy-MM-dd'T'HH:mm:ss");
+  return new Date(iso);
+}
+
+
+
+/** ========== Web API 受け口（Discord→GAS） ========== */
+
+/** 固定のAPIキー（Discordボットからのリクエストに必須） */
+const API_KEY = 'my_secure_api_key_2025_discord_bot';
+
+/** Webhook: JSON { text: string, mode?: 'preview'|'create' } を受ける */
+function doPost(e) {
+  try {
+    const keyParam = (e.parameter && e.parameter.key) || null;
+    const keyHeader = (e && e.postData && e.postData.type) ? null : null;
+    const key = keyParam || keyHeader;
+    if (key !== API_KEY) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'forbidden' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (!e.postData || !e.postData.contents) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'empty body' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    const body = JSON.parse(e.postData.contents);
+    const mode = body.mode || 'create';
+
+    // スケジュール取得モード
+    if (mode === 'get_schedule') {
+      const dateStr = body.date || '今日';
+      const days = body.days || 1;
+      const events = getScheduleForDate_(dateStr, days);
+      return ContentService.createTextOutput(JSON.stringify({ 
+        ok: true, 
+        mode: 'get_schedule', 
+        events: events 
+      }))
+      .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 週間レポートモード
+    if (mode === 'weekly_report') {
+      const now = new Date();
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - now.getDay()); // 日曜日
+      startOfWeek.setHours(0, 0, 0, 0);
+      
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 7);
+      
+      const report = generateWeeklyReport_(startOfWeek, endOfWeek);
+      return ContentService.createTextOutput(JSON.stringify({ 
+        ok: true, 
+        mode: 'weekly_report', 
+        report: report 
+      }))
+      .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 既存のpreview/createモード処理
+    const raw = String(body.text || '').trim();
+    if (!raw) {
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'no text' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    const plan = planFromRaw_(raw, mode === 'preview');
+
+    if (mode === 'preview') {
+      const preview = plan.preview.map(x => ({
+        title: x.title,
+        start: x.start,
+        end: x.end
+      }));
+      return ContentService.createTextOutput(JSON.stringify({ ok: true, mode, preview }))
+        .setMimeType(ContentService.MimeType.JSON);
+    } else {
+      const created = createEvents_(plan.items);
+      storeUndoBuffer_(created);
+      return ContentService.createTextOutput(JSON.stringify({ ok: true, mode, created }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: String(err) }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+
+/** ========== GET エンドポイント（テスト用） ========== */
+
+/** GET リクエスト用（API動作確認・ヘルスチェック） */
+function doGet(e) {
+  try {
+    // セキュリティチェック
+    const keyParam = (e.parameter && e.parameter.key) || null;
+    if (keyParam !== API_KEY) {
+      return ContentService.createTextOutput(JSON.stringify({ 
+        ok: false, 
+        error: 'forbidden - API key required in query parameter: ?key=YOUR_API_KEY' 
+      }))
+      .setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    // ヘルスチェック用レスポンス
+    return ContentService.createTextOutput(JSON.stringify({ 
+      ok: true, 
+      service: 'Text2GCalendar API',
+      status: 'running',
+      timestamp: new Date().toISOString(),
+      endpoints: {
+        'GET': 'Health check and API status',
+        'POST': 'Create calendar events from text'
+      },
+      usage: {
+        'preview': 'POST with {"mode":"preview", "text":"your tasks"}',
+        'create': 'POST with {"mode":"create", "text":"your tasks"}'
+      }
+    }))
+    .setMimeType(ContentService.MimeType.JSON);
+    
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ 
+      ok: false, 
+      error: 'doGet error: ' + String(err) 
+    }))
+    .setMimeType(ContentService.MimeType.JSON);
+  }
+}

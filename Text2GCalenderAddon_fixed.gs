@@ -259,23 +259,17 @@ function findNextAvailableSlot_(cursor, dayEnd, minutes, tz, existingEvents, max
 function planFromRaw_(raw, previewOnly) {
   const tz = SETTINGS.TIMEZONE;
   const now = new Date();
-  let cursorDate = dateAt_(now, SETTINGS.WORK_START, tz);
+  let workStartToday = dateAt_(now, SETTINGS.WORK_START, tz);
   let dayEnd = dateAt_(now, SETTINGS.WORK_END, tz);
   
-  // 現在時刻の処理を簡素化
-  if (now < cursorDate) {
-    // 営業時間前の場合は営業開始時刻
-    cursorDate = dateAt_(now, SETTINGS.WORK_START, tz);
-    dayEnd = dateAt_(now, SETTINGS.WORK_END, tz);
-  } else if (now > dayEnd) {
-    // 営業時間後の場合は翌日の営業開始時刻
+  // 現在時刻と営業開始時刻の遅い方を取る
+  let cursorDate = new Date(Math.max(now.getTime(), workStartToday.getTime()));
+  
+  // 営業時間後の場合は翌日の営業開始時刻
+  if (now > dayEnd) {
     const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
     cursorDate = dateAt_(tomorrow, SETTINGS.WORK_START, tz);
     dayEnd = dateAt_(tomorrow, SETTINGS.WORK_END, tz);
-  } else {
-    // 営業時間内の場合は現在時刻から開始
-    cursorDate = new Date(now);
-    dayEnd = dateAt_(now, SETTINGS.WORK_END, tz);
   }
   
   console.log(`スケジュール開始時刻: ${Utilities.formatDate(cursorDate, tz, 'yyyy-MM-dd HH:mm')}`);
@@ -363,9 +357,16 @@ function planFromRaw_(raw, previewOnly) {
     const dateTasks = tasksByDate[dateKey];
     const firstTask = dateTasks[0];
     
-    // この日の開始時刻を設定
+    // この日の開始時刻を設定（現在時刻も考慮）
     let dayStartCursor = dateAt_(firstTask.dayAnchor, SETTINGS.WORK_START, tz);
     let dayEndTime = dateAt_(firstTask.dayAnchor, SETTINGS.WORK_END, tz);
+    
+    // 現在時刻がその日の場合、現在時刻を考慮
+    const now = new Date();
+    if (isSameDate_(now, firstTask.dayAnchor, tz) && now > dayStartCursor) {
+      dayStartCursor = now;
+      console.log(`当日のため現在時刻から開始: ${Utilities.formatDate(dayStartCursor, tz, 'yyyy-MM-dd HH:mm')}`);
+    }
     
     for (const p of dateTasks) {
       let start, end;
@@ -564,6 +565,12 @@ function parseLine_(line, now) {
   if (!title) title = 'Untitled Task';
 
   return { title, minutes, dayAnchor, fixedStart, priority };
+}
+
+function isSameDate_(date1, date2, tz) {
+  const d1Str = Utilities.formatDate(date1, tz, 'yyyy-MM-dd');
+  const d2Str = Utilities.formatDate(date2, tz, 'yyyy-MM-dd');
+  return d1Str === d2Str;
 }
 
 function parseDateToken_(token, now) {
