@@ -1,19 +1,36 @@
 /* =====================================================================
- * Text2GCalendar (Calendar Add-on) — 既存予定回避機能追加版
+ * Text2GCalendar - Google Calendar Automation System
  * =====================================================================
- * 機能概要：
- * - 既存のカレンダー予定を読み込み、時間の競合を自動回避
- * - 空き時間に自動配置
- * - ★による優先度表記サポート（A/B/C → ★★★/★★/★）
- * - 週間レポート機能
- * - Discord Bot連携用Web API
+ * 📅 主要機能:
+ *   - テキストから自動でカレンダーイベント作成
+ *   - 既存予定との競合を自動回避
+ *   - 優先度管理（A/B/C → ★★★/★★/★）
+ *   - 日付指定（YYMMDD形式、相対日付対応）
+ *   - 複数タスク自動分離
+ *   - 週間レポート生成
+ *   - Discord Bot連携用Web API
  * 
- * 【重要】appsscript.jsonで以下を設定すること：
- * {
- *   "timeZone": "Asia/Tokyo",
- *   "dependencies": {},
- *   "exceptionLogging": "STACKDRIVER"
- * }
+ * ⚙️ 設定要件:
+ *   appsscript.json に以下を設定:
+ *   {
+ *     "timeZone": "Asia/Tokyo",
+ *     "dependencies": {},
+ *     "exceptionLogging": "STACKDRIVER"
+ *   }
+ * 
+ * 🔧 技術仕様:
+ *   - タイムゾーン: Asia/Tokyo (JST/UTC+9)
+ *   - 営業時間: 08:00-21:00
+ *   - タスク間隔: 5分
+ *   - 最大試行回数: 500回
+ *   - 先読み日数: 30日
+ * 
+ * 📝 入力形式例:
+ *   251031 細胞継代 1h A
+ *   251031 C2T5657メンテ 2h B データ解析 1h A
+ *   @14:00 会議 1h C
+ * 
+ * 🚀 バージョン: 2.0 (2025-10-30)
  * =====================================================================
  */
 
@@ -490,23 +507,27 @@ function planFromRaw_(raw, previewOnly) {
     dayEnd = dateAt_(tomorrow, SETTINGS.WORK_END, tz);
   }
   
-  console.log(`スケジュール開始時刻: ${Utilities.formatDate(cursorDate, tz, 'yyyy-MM-dd HH:mm')}`);
-  console.log(`当日終了時刻: ${Utilities.formatDate(dayEnd, tz, 'yyyy-MM-dd HH:mm')}`);
+  console.log(`\n========================================`);
+  console.log(`スケジュール計画開始`);
+  console.log(`========================================`);
+  console.log(`現在時刻: ${Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm (EEE)')}`);
+  console.log(`計画開始: ${Utilities.formatDate(cursorDate, tz, 'yyyy-MM-dd HH:mm')}`);
   
   const lookAheadEnd = new Date(now);
   lookAheadEnd.setDate(lookAheadEnd.getDate() + SETTINGS.LOOKAHEAD_DAYS);
   const existingEvents = getExistingEvents_(now, lookAheadEnd);
   
-  console.log(`既存予定: ${existingEvents.length}件取得 (${Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm')} から ${Utilities.formatDate(lookAheadEnd, tz, 'yyyy-MM-dd')} まで)`);
+  console.log(`既存予定: ${existingEvents.length}件 (${SETTINGS.LOOKAHEAD_DAYS}日先まで)`);
 
-  // 行の分離を改善：改行 または 複数タスクを自動分離
+  // 行の分離：改行 + 複数タスク自動分離
   let lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
   
-  // 単一行に複数のタスクがある場合の分離処理
   let expandedLines = [];
   for (const line of lines) {
     const splitTasks = splitMultipleTasks_(line);
-    console.log(`元の行: "${line}" → 分離後: [${splitTasks.map(t => `"${t}"`).join(', ')}]`);
+    if (splitTasks.length > 1) {
+      console.log(`複数タスク分離: "${line}" → ${splitTasks.length}件`);
+    }
     expandedLines = expandedLines.concat(splitTasks);
   }
   
@@ -520,12 +541,10 @@ function planFromRaw_(raw, previewOnly) {
     const parsed = parseLine_(line0, now);
     if (!parsed || !parsed.minutes) continue;
 
-    // 長時間タスク（4時間以上）の場合は警告
+    // 長時間タスク警告
     if (parsed.minutes > 240) {
-      console.log(`警告: 長時間タスク "${parsed.title}" (${parsed.minutes}分) - 複数日に分割を推奨`);
+      console.log(`⚠️ 長時間タスク "${parsed.title}" (${(parsed.minutes/60).toFixed(1)}時間)`);
     }
-
-    console.log(`パースされたタスク: "${parsed.title}" - 日付: ${parsed.dayAnchor ? Utilities.formatDate(parsed.dayAnchor, tz, 'yyyy-MM-dd') : 'なし'} - 優先度: ${parsed.priority}`);
     
     parsedTasks.push({
       order: idx,
@@ -571,41 +590,40 @@ function planFromRaw_(raw, previewOnly) {
   
   // 日付指定タスクを先に処理
   for (const dateKey in tasksByDate) {
-    console.log(`\n=== ${dateKey} のタスク処理開始 ===`);
+    console.log(`\n=== ${dateKey} のタスク処理 ===`);
     const dateTasks = tasksByDate[dateKey];
     const firstTask = dateTasks[0];
     
-    // 指定日の開始時刻を設定（基本は朝8時）
+    // 指定日の開始時刻を設定
     let dayStartCursor = dateAt_(firstTask.dayAnchor, SETTINGS.WORK_START, tz);
     let dayEndTime = dateAt_(firstTask.dayAnchor, SETTINGS.WORK_END, tz);
     
-    // 【重要】当日かつ現在時刻が朝8時より後の場合のみ、現在時刻から開始
+    // 今日の場合で現在時刻が営業開始時刻より後なら、現在時刻から開始
     if (isSameDate_(now, firstTask.dayAnchor, tz) && now > dayStartCursor) {
       dayStartCursor = now;
-      console.log(`当日かつ現在時刻が営業開始時刻より後のため、現在時刻から開始: ${Utilities.formatDate(dayStartCursor, tz, 'yyyy-MM-dd HH:mm')}`);
+      console.log(`  開始: ${Utilities.formatDate(dayStartCursor, tz, 'HH:mm')} (現在時刻)`);
     } else {
-      console.log(`${dateKey} の朝 ${SETTINGS.WORK_START} から開始: ${Utilities.formatDate(dayStartCursor, tz, 'yyyy-MM-dd HH:mm')}`);
+      console.log(`  開始: ${SETTINGS.WORK_START} (営業開始)`);
     }
     
     for (const p of dateTasks) {
       let start, end;
       
       try {
-        // 日付指定タスクは指定日に固定（allowOverflow = false）
+        // 日付固定でスロット検索（allowOverflow = false）
         const result = findNextAvailableSlot_(dayStartCursor, dayEndTime, p.minutes, tz, existingEvents, 500, false);
         start = result.start;
         end = result.end;
-        dayStartCursor = result.cursorDate; // この日の次のタスク用にカーソル更新
+        dayStartCursor = result.cursorDate;
         
-        console.log(`${dateKey} タスク配置: "${p.title}" → ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
+        console.log(`  配置: "${p.title}" ${Utilities.formatDate(start, tz, 'HH:mm')}-${Utilities.formatDate(end, tz, 'HH:mm')}`);
       } catch (error) {
-        console.log(`タスク "${p.title}" のスケジュール失敗: ${error.message}`);
-        // 指定日の範囲内で強制配置
+        // エラー時は強制配置
         start = new Date(dayStartCursor);
         end = new Date(start.getTime() + p.minutes * 60000);
         dayStartCursor = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
         
-        console.log(`${dateKey} 強制配置: "${p.title}" → ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
+        console.log(`  ⚠️ 強制配置: "${p.title}" ${Utilities.formatDate(start, tz, 'HH:mm')}-${Utilities.formatDate(end, tz, 'HH:mm')}`);
       }
       
       const item = { 
@@ -618,6 +636,7 @@ function planFromRaw_(raw, previewOnly) {
       };
       items.push(item);
       
+      // プレビュー用タイトル（★付き）
       let previewTitle = item.title;
       if (!previewTitle.includes('★')) {
         const priorityLabel = p.priorityLabel || 'C';
@@ -635,75 +654,70 @@ function planFromRaw_(raw, previewOnly) {
   }
   
   // 日付指定なしのタスクを処理
-  for (const p of noDateTasks) {
-    let start, end;
+  if (noDateTasks.length > 0) {
+    console.log(`\n=== 日付指定なしタスク (${noDateTasks.length}件) ===`);
     
-    if (p.fixedStart) {
-      start = p.fixedStart;
-      end = new Date(start.getTime() + p.minutes * 60000);
+    for (const p of noDateTasks) {
+      let start, end;
       
-      if (!isTimeSlotAvailable_(start, end, existingEvents)) {
-        console.log(`警告: "${p.title}" は既存予定と重複しています（${start} - ${end}）`);
-      }
-      
-      cursorDate = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
-      dayEnd = dateAt_(cursorDate, SETTINGS.WORK_END, tz);
-    } else {
-      if (p.dayAnchor) {
-        // 指定された日の開始時刻に強制設定（既存のcursorDateより前でも）
-        const targetDayStart = dateAt_(p.dayAnchor, SETTINGS.WORK_START, tz);
-        const targetDayEnd = dateAt_(p.dayAnchor, SETTINGS.WORK_END, tz);
-        
-        // 日付が指定されている場合は、その日の開始時刻にリセット
-        cursorDate = targetDayStart;
-        dayEnd = targetDayEnd;
-        
-        console.log(`日付指定タスク "${p.title}": ${Utilities.formatDate(p.dayAnchor, tz, 'yyyy-MM-dd')} の ${SETTINGS.WORK_START} から配置開始`);
-      }
-      
-      try {
-        const result = findNextAvailableSlot_(cursorDate, dayEnd, p.minutes, tz, existingEvents);
-        start = result.start;
-        end = result.end;
-        cursorDate = result.cursorDate;
-        dayEnd = result.dayEnd;
-        
-        console.log(`タスク配置: "${p.title}" → ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
-      } catch (error) {
-        console.log(`タスク "${p.title}" (${p.minutes}分) のスケジュール失敗: ${error.message}`);
-        // エラーの場合は強制的に時間を割り当て（既存予定と重複してもOK）
-        start = new Date(cursorDate);
+      if (p.fixedStart) {
+        // 時刻固定の場合
+        start = p.fixedStart;
         end = new Date(start.getTime() + p.minutes * 60000);
-        cursorDate = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
         
-        console.log(`強制配置: ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
+        if (!isTimeSlotAvailable_(start, end, existingEvents)) {
+          console.log(`  ⚠️ 警告: "${p.title}" は既存予定と重複`);
+        }
+        
+        cursorDate = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
+        dayEnd = dateAt_(cursorDate, SETTINGS.WORK_END, tz);
+        
+        console.log(`  固定時刻: "${p.title}" ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')}-${Utilities.formatDate(end, tz, 'HH:mm')}`);
+      } else {
+        // 空き時間を検索
+        try {
+          const result = findNextAvailableSlot_(cursorDate, dayEnd, p.minutes, tz, existingEvents);
+          start = result.start;
+          end = result.end;
+          cursorDate = result.cursorDate;
+          dayEnd = result.dayEnd;
+          
+          console.log(`  配置: "${p.title}" ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')}-${Utilities.formatDate(end, tz, 'HH:mm')}`);
+        } catch (error) {
+          // エラー時は強制配置
+          start = new Date(cursorDate);
+          end = new Date(start.getTime() + p.minutes * 60000);
+          cursorDate = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
+          
+          console.log(`  ⚠️ 強制配置: "${p.title}" ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')}-${Utilities.formatDate(end, tz, 'HH:mm')}`);
+        }
       }
+      
+      const item = { 
+        title: p.title, 
+        minutes: p.minutes, 
+        start, 
+        end,
+        priority: p.priority,
+        priorityLabel: p.priorityLabel
+      };
+      items.push(item);
+      
+      // プレビュー用タイトル（★付き）
+      let previewTitle = item.title;
+      if (!previewTitle.includes('★')) {
+        const priorityLabel = p.priorityLabel || 'C';
+        if (priorityLabel === 'A') previewTitle += ' ★★★';
+        else if (priorityLabel === 'B') previewTitle += ' ★★';
+        else if (priorityLabel === 'C') previewTitle += ' ★';
+      }
+      
+      preview.push({ 
+        title: previewTitle,
+        start: item.start, 
+        end: item.end 
+      });
     }
-    
-    const item = { 
-      title: p.title, 
-      minutes: p.minutes, 
-      start, 
-      end,
-      priority: p.priority,
-      priorityLabel: p.priorityLabel
-    };
-    items.push(item);
-    
-    // プレビュー用のタイトルも★付きにする
-    let previewTitle = item.title;
-    if (!previewTitle.includes('★')) {
-      const priorityLabel = p.priorityLabel || 'C';
-      if (priorityLabel === 'A') previewTitle += ' ★★★';
-      else if (priorityLabel === 'B') previewTitle += ' ★★';
-      else if (priorityLabel === 'C') previewTitle += ' ★';
-    }
-    
-    preview.push({ 
-      title: previewTitle,
-      start: item.start, 
-      end: item.end 
-    });
   }
 
   return { items, preview };
@@ -817,17 +831,15 @@ function parseDateToken_(token, now) {
     const [M,D] = token.split('/').map(Number);
     result = new Date(now.getFullYear(), M-1, D);
   } else if (/^\d{6}$/.test(token)) {
-    // 251030形式 (YYMMDD)
-    const Y = parseInt('20' + token.substring(0, 2), 10); // 25 -> 2025
-    const M = parseInt(token.substring(2, 4), 10);        // 10
-    const D = parseInt(token.substring(4, 6), 10);        // 30
+    // YYMMDD形式 (例: 251030 → 2025-10-30)
+    const Y = parseInt('20' + token.substring(0, 2), 10);
+    const M = parseInt(token.substring(2, 4), 10);
+    const D = parseInt(token.substring(4, 6), 10);
     result = new Date(Y, M-1, D);
-    console.log(`日付パース: ${token} → ${Y}年${M}月${D}日 → ${Utilities.formatDate(result, tz, 'yyyy-MM-dd (EEE)')}`);
   } else {
     result = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   }
   
-  console.log(`parseDateToken_: "${token}" → ${Utilities.formatDate(result, tz, 'yyyy-MM-dd (EEE)')}`);
   return result;
 }
 
@@ -837,88 +849,71 @@ function createEvents_(items) {
   const out = [];
   const cal = CalendarApp.getDefaultCalendar();
   const tz = SETTINGS.TIMEZONE;
+  const now = new Date();
   
   console.log(`\n=== カレンダーイベント作成開始 (${items.length}件) ===`);
   
   for (let taskIndex = 0; taskIndex < items.length; taskIndex++) {
     const it = items[taskIndex];
-    let title = it.title;
     
-    // タイトルに★がない場合、優先度に応じて自動追加
+    // タイトルに優先度マークを追加
+    let title = it.title;
     if (!title.includes('★')) {
       const priorityLabel = it.priorityLabel || 'C';
-      if (priorityLabel === 'A') {
-        title = title + ' ★★★';
-      } else if (priorityLabel === 'B') {
-        title = title + ' ★★';
-      } else if (priorityLabel === 'C') {
-        title = title + ' ★';
-      }
+      if (priorityLabel === 'A') title += ' ★★★';
+      else if (priorityLabel === 'B') title += ' ★★';
+      else if (priorityLabel === 'C') title += ' ★';
     }
     
-    console.log(`イベント作成: "${title}"`);
-    console.log(`  ❌ 受信Dateオブジェクト: start=${it.start.getTime()}, end=${it.end.getTime()}`);
-    console.log(`  ❌ 受信時刻: ${Utilities.formatDate(it.start, tz, 'yyyy-MM-dd HH:mm:ss Z')} - ${Utilities.formatDate(it.end, tz, 'HH:mm:ss Z')}`);
+    console.log(`\n[タスク ${taskIndex + 1}/${items.length}] ${title}`);
     
-    // カレンダーのタイムゾーンも確認
-    console.log(`  カレンダーTZ: ${cal.getTimeZone()}`);
-    console.log(`  スクリプトTZ: ${Session.getScriptTimeZone()}`);
-    
-    // 🚨 緊急修正：元のタイムスタンプから直接正しい時刻を再構築
-    console.log(`  🔧 原因調査: it.start constructor args`);
-    console.log(`  🔧 getFullYear: ${it.start.getFullYear()}, getMonth: ${it.start.getMonth()}, getDate: ${it.start.getDate()}`);
-    console.log(`  🔧 getHours: ${it.start.getHours()}, getMinutes: ${it.start.getMinutes()}`);
-    
-    // 🔧 スマート時刻修正：既存予定回避 + 正しい日付判定
+    // 指定日付を取得
     const targetYear = it.start.getFullYear();
     const targetMonth = it.start.getMonth(); 
     const targetDate = it.start.getDate();
-    
-    console.log(`  🎯 指定日付: ${targetYear}-${String(targetMonth+1).padStart(2,'0')}-${String(targetDate).padStart(2,'0')}`);
-    
-    // 指定日が今日か明日かを判定
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const targetDay = new Date(targetYear, targetMonth, targetDate);
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const isToday = targetDay.getTime() === today.getTime();
-    const isTomorrow = targetDay.getTime() === (today.getTime() + 86400000);
     
-    console.log(`  📅 日付判定: 今日=${isToday}, 明日=${isTomorrow}, 現在時刻=${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`);
+    console.log(`📅 指定日: ${Utilities.formatDate(targetDay, tz, 'yyyy-MM-dd (EEE)')} ${isToday ? '(今日)' : ''}`);
     
-    // 🔍 指定日の既存予定を取得（空き時間検索用）
+    // 指定日の既存予定を取得
     const dayStart = new Date(targetYear, targetMonth, targetDate, 0, 0, 0);
-    const dayEndForSearch = new Date(targetYear, targetMonth, targetDate, 23, 59, 59);
-    const existingEvents = getExistingEvents_(dayStart, dayEndForSearch);
+    const dayEnd = new Date(targetYear, targetMonth, targetDate, 23, 59, 59);
+    const existingEvents = getExistingEvents_(dayStart, dayEnd);
     
-    console.log(`  📋 ${targetYear}-${String(targetMonth+1).padStart(2,'0')}-${String(targetDate).padStart(2,'0')} の既存予定: ${existingEvents.length}件`);
-    existingEvents.forEach((ev, idx) => {
-      console.log(`    ${idx+1}. ${Utilities.formatDate(ev.start, tz, 'HH:mm')}-${Utilities.formatDate(ev.end, tz, 'HH:mm')}: ${ev.title}`);
-    });
+    if (existingEvents.length > 0) {
+      console.log(`📋 既存予定 ${existingEvents.length}件:`);
+      existingEvents.forEach((ev, idx) => {
+        console.log(`  ${idx + 1}. ${Utilities.formatDate(ev.start, tz, 'HH:mm')}-${Utilities.formatDate(ev.end, tz, 'HH:mm')} ${ev.title}`);
+      });
+    } else {
+      console.log(`📋 既存予定: なし`);
+    }
     
-    // 🎯 開始時刻を決定
-    let searchStartHour = 8;  // 基本は朝8時
+    // 開始時刻を決定（今日なら現在時刻、未来なら8:00）
+    let searchStartHour = 8;
     let searchStartMinute = 0;
     
-    // 今日の場合、現在時刻が朝8時より後なら現在時刻から開始
     if (isToday && now.getHours() >= 8) {
       searchStartHour = now.getHours();
       searchStartMinute = now.getMinutes();
-      console.log(`  ⏰ 今日の予定: 現在時刻 ${searchStartHour}:${String(searchStartMinute).padStart(2,'0')} から開始`);
+      console.log(`⏰ 開始時刻: ${searchStartHour}:${String(searchStartMinute).padStart(2, '0')} (現在時刻)`);
     } else {
-      console.log(`  ⏰ ${isToday ? '今日の予定' : '未来の予定'}: 朝8時から開始`);
+      console.log(`⏰ 開始時刻: 08:00 (営業開始)`);
     }
     
-    // 🔍 空き時間を検索
-    let correctStart = new Date(targetYear, targetMonth, targetDate, searchStartHour, searchStartMinute, 0, 0);
+    // 空き時間を検索
+    let finalStart = new Date(targetYear, targetMonth, targetDate, searchStartHour, searchStartMinute, 0, 0);
     let attemptCount = 0;
     const maxAttempts = 50;
     
     while (attemptCount < maxAttempts) {
-      const proposedEnd = new Date(correctStart.getTime() + it.minutes * 60000);
+      const proposedEnd = new Date(finalStart.getTime() + it.minutes * 60000);
       
       // 営業時間チェック (21:00まで)
-      if (correctStart.getHours() >= 21) {
-        console.log(`  ⚠️ 営業時間外のため強制配置: ${correctStart.getHours()}:${String(correctStart.getMinutes()).padStart(2,'0')}`);
+      if (finalStart.getHours() >= 21) {
+        console.log(`⚠️  営業時間外 (21:00以降) - 強制配置`);
         break;
       }
       
@@ -928,52 +923,46 @@ function createEvents_(items) {
         const existingStart = new Date(existing.start);
         const existingEnd = new Date(existing.end);
         
-        // 重複判定
-        if ((correctStart >= existingStart && correctStart < existingEnd) ||
+        if ((finalStart >= existingStart && finalStart < existingEnd) ||
             (proposedEnd > existingStart && proposedEnd <= existingEnd) ||
-            (correctStart <= existingStart && proposedEnd >= existingEnd)) {
+            (finalStart <= existingStart && proposedEnd >= existingEnd)) {
           hasConflict = true;
-          console.log(`  ❌ 重複検出: ${Utilities.formatDate(correctStart, tz, 'HH:mm')}-${Utilities.formatDate(proposedEnd, tz, 'HH:mm')} vs 既存 ${Utilities.formatDate(existingStart, tz, 'HH:mm')}-${Utilities.formatDate(existingEnd, tz, 'HH:mm')}`);
+          console.log(`❌ 重複: ${Utilities.formatDate(finalStart, tz, 'HH:mm')}-${Utilities.formatDate(proposedEnd, tz, 'HH:mm')} vs ${Utilities.formatDate(existingStart, tz, 'HH:mm')}-${Utilities.formatDate(existingEnd, tz, 'HH:mm')} ${existing.title}`);
           
           // 既存予定の終了時刻+5分後に移動
-          correctStart = new Date(existingEnd.getTime() + 5 * 60000);
+          finalStart = new Date(existingEnd.getTime() + SETTINGS.GAP_MIN * 60000);
           break;
         }
       }
       
       if (!hasConflict) {
-        console.log(`  ✅ 空き時間発見: ${Utilities.formatDate(correctStart, tz, 'HH:mm')}-${Utilities.formatDate(proposedEnd, tz, 'HH:mm')}`);
+        console.log(`✅ 空き時間発見: ${Utilities.formatDate(finalStart, tz, 'HH:mm')}-${Utilities.formatDate(proposedEnd, tz, 'HH:mm')}`);
         break;
       }
       
       attemptCount++;
     }
     
-    const correctEnd = new Date(correctStart.getTime() + it.minutes * 60000);
+    const finalEnd = new Date(finalStart.getTime() + it.minutes * 60000);
     
-    console.log(`  ✅ 最終配置: タスク${taskIndex+1} "${title}" → ${Utilities.formatDate(correctStart, tz, 'HH:mm')}-${Utilities.formatDate(correctEnd, tz, 'HH:mm')}`);
-    console.log(`  ✅ 修正後: start=${correctStart.getTime()}, end=${correctEnd.getTime()}`);
-    console.log(`  ✅ 修正時刻: ${Utilities.formatDate(correctStart, tz, 'yyyy-MM-dd HH:mm:ss Z')} - ${Utilities.formatDate(correctEnd, tz, 'HH:mm:ss Z')}`);
+    console.log(`🎯 最終配置: ${Utilities.formatDate(finalStart, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(finalEnd, tz, 'HH:mm')}`);
     
-    const ev = cal.createEvent(title, correctStart, correctEnd, { 
-      description: 'Text2GCalendar (既存予定回避 + スマート時刻配置)' 
+    // カレンダーイベント作成
+    const ev = cal.createEvent(title, finalStart, finalEnd, { 
+      description: 'Text2GCalendar - 既存予定回避 + スマート配置' 
     });
     
-    // 作成されたイベントの実際の時刻を確認
-    const createdStart = ev.getStartTime();
-    const createdEnd = ev.getEndTime();
-    console.log(`  実際の作成: ${Utilities.formatDate(createdStart, tz, 'yyyy-MM-dd HH:mm:ss Z')} - ${Utilities.formatDate(createdEnd, tz, 'HH:mm:ss Z')}`);
-    console.log(`  実際作成TS: start=${createdStart.getTime()}, end=${createdEnd.getTime()}`);
+    console.log(`✔️  イベント作成成功: ID=${ev.getId()}`);
     
     out.push({ 
       eventId: ev.getId(), 
       title: title,
-      start: it.start, 
-      end: it.end 
+      start: finalStart, 
+      end: finalEnd 
     });
   }
   
-  console.log(`=== カレンダーイベント作成完了 ===\n`);
+  console.log(`\n=== カレンダーイベント作成完了 (${out.length}件) ===\n`);
   return out;
 }
 
@@ -1018,20 +1007,12 @@ function renderLines_(arr) {
  */
 function dateAt_(baseDate, hhmm, tz) {
   const [hours, minutes] = hhmm.split(':').map(Number);
-  
-  // Google Apps Scriptのスクリプトタイムゾーンで動作する
-  // new Date()はスクリプトのタイムゾーン設定（appsscript.jsonのtimeZone）を使用
   const year = baseDate.getFullYear();
   const month = baseDate.getMonth();
   const day = baseDate.getDate();
   
-  // ローカル時刻として作成（スクリプトタイムゾーン = Asia/Tokyo）
-  const result = new Date(year, month, day, hours, minutes, 0, 0);
-  
-  console.log(`dateAt_: 入力=${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')} ${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')} (${tz})`);
-  console.log(`dateAt_: 出力=${Utilities.formatDate(result, tz, 'yyyy-MM-dd HH:mm:ss Z')}, timestamp=${result.getTime()}`);
-  
-  return result;
+  // スクリプトタイムゾーン（Asia/Tokyo）でDateオブジェクトを作成
+  return new Date(year, month, day, hours, minutes, 0, 0);
 }
 
 // ===== Add-on UI =====
