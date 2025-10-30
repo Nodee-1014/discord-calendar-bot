@@ -131,77 +131,40 @@ function splitMultipleTasks_(line) {
     line = line.substring(dateMatch[0].length);
   }
   
-  // 時間パターンを見つけて分割点を特定
-  const timePatterns = /(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours|時間|m|min|mins|minute|minutes|分)\s*([ABC]?)/gi;
+  // より厳密な時間+優先度パターンでタスクを分離
+  // "タスク名 1h A タスク名2 1h A" のような形式を想定
+  const taskPattern = /(.+?)\s+(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours|時間|m|min|mins|minute|minutes|分)\s*([ABC]?)\s*/gi;
   let matches = [];
   let match;
   
-  while ((match = timePatterns.exec(line)) !== null) {
+  // すべてのタスクパターンを抽出
+  while ((match = taskPattern.exec(line)) !== null) {
+    const taskName = match[1].trim();
+    const timeValue = match[2];
+    const timeUnit = match[0].match(/(h|hr|hrs|hour|hours|時間|m|min|mins|minute|minutes|分)/i)[0];
+    const priority = match[3] || 'C';
+    
+    // タスク名を整理（前のタスクの優先度文字を除去）
+    const cleanTaskName = taskName.replace(/\s+[ABC]\s*$/, '').trim();
+    
     matches.push({
-      index: match.index,
-      fullMatch: match[0],
-      endIndex: match.index + match[0].length
+      taskName: cleanTaskName,
+      timeString: `${timeValue}${timeUnit}`,
+      priority: priority,
+      fullTask: `${cleanTaskName} ${timeValue}${timeUnit} ${priority}`.trim()
     });
   }
   
-  if (matches.length <= 1) {
-    // 1つまたは0個のタスクなので、そのまま返す
+  if (matches.length === 0) {
+    // パターンマッチしない場合は元の行をそのまま返す
     return [datePrefix + line];
   }
   
-  // 複数のタイムパターンが見つかった場合、分割
-  let tasks = [];
-  let lastEnd = 0;
-  
-  for (let i = 0; i < matches.length; i++) {
-    const currentMatch = matches[i];
-    const nextMatch = matches[i + 1];
-    
-    let taskEnd;
-    if (nextMatch) {
-      // 次のタスクの開始位置を見つける
-      taskEnd = findTaskBoundary_(line, currentMatch.endIndex, nextMatch.index);
-    } else {
-      // 最後のタスク
-      taskEnd = line.length;
-    }
-    
-    const taskText = line.substring(lastEnd, taskEnd).trim();
-    if (taskText) {
-      tasks.push(datePrefix + taskText);
-    }
-    lastEnd = taskEnd;
-  }
-  
-  return tasks.length > 0 ? tasks : [datePrefix + line];
+  // 各タスクを独立した行として返す
+  return matches.map(match => datePrefix + match.fullTask);
 }
 
-function findTaskBoundary_(line, currentEnd, nextStart) {
-  // 現在のタスクの終わりを探す
-  // 優先度文字（A, B, C）の後ろか、明らかな区切り文字まで
-  let boundary = currentEnd;
-  
-  // 優先度文字を探す
-  for (let i = currentEnd; i < nextStart; i++) {
-    const char = line[i];
-    if (/[ABC]/.test(char)) {
-      // A, B, Cの後の空白までを含める
-      boundary = i + 1;
-      while (boundary < nextStart && /\s/.test(line[boundary])) {
-        boundary++;
-      }
-      break;
-    }
-    // 日本語文字で区切られている場合
-    if (/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]/.test(char) && 
-        i > currentEnd + 3) {
-      boundary = i;
-      break;
-    }
-  }
-  
-  return Math.min(boundary, nextStart);
-}
+// findTaskBoundary_ 関数は新しい分離ロジックで不要になったため削除
 
 function isTimeSlotAvailable_(checkStart, checkEnd, existingEvents) {
   for (const ev of existingEvents) {
@@ -324,6 +287,7 @@ function planFromRaw_(raw, previewOnly) {
   let expandedLines = [];
   for (const line of lines) {
     const splitTasks = splitMultipleTasks_(line);
+    console.log(`元の行: "${line}" → 分離後: [${splitTasks.map(t => `"${t}"`).join(', ')}]`);
     expandedLines = expandedLines.concat(splitTasks);
   }
   
@@ -376,11 +340,10 @@ function planFromRaw_(raw, previewOnly) {
       dayEnd = dateAt_(cursorDate, SETTINGS.WORK_END, tz);
     } else {
       if (p.dayAnchor) {
-        const base = dateAt_(p.dayAnchor, SETTINGS.WORK_START, tz);
-        if (cursorDate < base) {
-          cursorDate = base;
-          dayEnd = dateAt_(p.dayAnchor, SETTINGS.WORK_END, tz);
-        }
+        // 指定された日の開始時刻に設定
+        cursorDate = dateAt_(p.dayAnchor, SETTINGS.WORK_START, tz);
+        dayEnd = dateAt_(p.dayAnchor, SETTINGS.WORK_END, tz);
+        console.log(`日付指定タスク "${p.title}": ${Utilities.formatDate(p.dayAnchor, tz, 'yyyy-MM-dd')} に配置`);
       }
       
       try {
@@ -496,6 +459,7 @@ function parseLine_(line, now) {
     .replace(/(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours|時間)\b/ig, '')
     .replace(/(\d+)\s*(?:m|min|mins|minute|minutes|分)\b/ig, '')
     .replace(/@\S+/g, '')
+    .replace(/^\d{6}\s*/, '')  // 先頭の日付形式（251030）を除去
     .replace(/\s{2,}/g, ' ')
     .trim();
   if (!title) title = 'Untitled Task';
