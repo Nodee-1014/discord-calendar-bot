@@ -840,7 +840,8 @@ function createEvents_(items) {
   
   console.log(`\n=== カレンダーイベント作成開始 (${items.length}件) ===`);
   
-  for (const it of items) {
+  for (let taskIndex = 0; taskIndex < items.length; taskIndex++) {
+    const it = items[taskIndex];
     let title = it.title;
     
     // タイトルに★がない場合、優先度に応じて自動追加
@@ -950,12 +951,12 @@ function createEvents_(items) {
     
     const correctEnd = new Date(correctStart.getTime() + it.minutes * 60000);
     
-    console.log(`  ✅ 動的修正: タスク${taskIndex+1} → ${expectedHour}:${String(expectedMinute).padStart(2,'0')}`);
+    console.log(`  ✅ 最終配置: タスク${taskIndex+1} "${title}" → ${Utilities.formatDate(correctStart, tz, 'HH:mm')}-${Utilities.formatDate(correctEnd, tz, 'HH:mm')}`);
     console.log(`  ✅ 修正後: start=${correctStart.getTime()}, end=${correctEnd.getTime()}`);
     console.log(`  ✅ 修正時刻: ${Utilities.formatDate(correctStart, tz, 'yyyy-MM-dd HH:mm:ss Z')} - ${Utilities.formatDate(correctEnd, tz, 'HH:mm:ss Z')}`);
     
     const ev = cal.createEvent(title, correctStart, correctEnd, { 
-      description: 'Text2GCalendar (動的修正版 - 重複回避)' 
+      description: 'Text2GCalendar (既存予定回避 + スマート時刻配置)' 
     });
     
     // 作成されたイベントの実際の時刻を確認
