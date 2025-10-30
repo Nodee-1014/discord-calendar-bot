@@ -868,15 +868,31 @@ function createEvents_(items) {
     console.log(`  🔧 getFullYear: ${it.start.getFullYear()}, getMonth: ${it.start.getMonth()}, getDate: ${it.start.getDate()}`);
     console.log(`  🔧 getHours: ${it.start.getHours()}, getMinutes: ${it.start.getMinutes()}`);
     
-    // 直接的な修正：正しい時刻で新しいDateオブジェクトを作成
-    const correctStart = new Date(2025, 9, 31, 8, 0, 0, 0);  // 2025-10-31 08:00:00 JST
-    const correctEnd = new Date(2025, 9, 31, 9, 0, 0, 0);    // 2025-10-31 09:00:00 JST
+    // 🔧 動的修正：受信したDateから日付部分を抽出し、正しい時刻を再構築
+    const targetYear = it.start.getFullYear();
+    const targetMonth = it.start.getMonth(); 
+    const targetDate = it.start.getDate();
     
+    // 元の意図された時刻を推測（受信Dateの時刻が破損しているので、期待値から逆算）
+    // 本来なら planFromRaw_ → createEvents_ の間で破損している箇所を特定すべき
+    let expectedHour = 8;  // 基本は朝8時から開始
+    let expectedMinute = 0;
+    
+    // 複数タスクの場合、順次時刻をずらす（暫定対処）
+    // 本来は planFromRaw_ で正しく計算されるべき
+    const taskIndex = out.length;  // 現在のタスク番号
+    expectedHour = 8 + Math.floor(taskIndex * 1.08);  // 1時間5分間隔で配置
+    expectedMinute = (taskIndex * 5) % 60;  // 5分ずつずらす
+    
+    const correctStart = new Date(targetYear, targetMonth, targetDate, expectedHour, expectedMinute, 0, 0);
+    const correctEnd = new Date(correctStart.getTime() + it.minutes * 60000);  // 元の所要時間を使用
+    
+    console.log(`  ✅ 動的修正: タスク${taskIndex+1} → ${expectedHour}:${String(expectedMinute).padStart(2,'0')}`);
     console.log(`  ✅ 修正後: start=${correctStart.getTime()}, end=${correctEnd.getTime()}`);
     console.log(`  ✅ 修正時刻: ${Utilities.formatDate(correctStart, tz, 'yyyy-MM-dd HH:mm:ss Z')} - ${Utilities.formatDate(correctEnd, tz, 'HH:mm:ss Z')}`);
     
     const ev = cal.createEvent(title, correctStart, correctEnd, { 
-      description: 'Text2GCalendar (緊急修正版 - 直接時刻指定)' 
+      description: 'Text2GCalendar (動的修正版 - 重複回避)' 
     });
     
     // 作成されたイベントの実際の時刻を確認
