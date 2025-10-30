@@ -866,8 +866,18 @@ function createEvents_(items) {
     // Date オブジェクトの内部情報も出力
     console.log(`  Date toString: start="${it.start.toString()}", end="${it.end.toString()}"`);
     
-    const ev = cal.createEvent(title, it.start, it.end, { 
-      description: 'Text2GCalendar (自動★追加)' 
+    // タイムゾーン問題回避: ISO文字列で明示的に作成を試行
+    const startISO = Utilities.formatDate(it.start, tz, "yyyy-MM-dd'T'HH:mm:ss");
+    const endISO = Utilities.formatDate(it.end, tz, "yyyy-MM-dd'T'HH:mm:ss");
+    console.log(`  ISO形式: start="${startISO}", end="${endISO}"`);
+    
+    // DateオブジェクトでなくISO文字列を使用
+    const startForCalendar = new Date(startISO);
+    const endForCalendar = new Date(endISO);
+    console.log(`  カレンダー用Date: start=${startForCalendar.getTime()}, end=${endForCalendar.getTime()}`);
+    
+    const ev = cal.createEvent(title, startForCalendar, endForCalendar, { 
+      description: 'Text2GCalendar (自動★追加・TZ修正版)' 
     });
     
     // 作成されたイベントの実際の時刻を確認
