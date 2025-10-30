@@ -899,32 +899,30 @@ function renderLines_(arr) {
 
 /**
  * 指定した日付と時刻でDateオブジェクトを作成（タイムゾーン考慮）
+ * Google Apps Scriptのタイムゾーン設定に従ってDateオブジェクトを作成します
  * @param {Date} baseDate - 基準日付
  * @param {string} hhmm - 時刻（HH:MM形式）
- * @param {string} tz - タイムゾーン
+ * @param {string} tz - タイムゾーン（'Asia/Tokyo'など）
  * @return {Date} 作成されたDateオブジェクト
  */
 function dateAt_(baseDate, hhmm, tz) {
   const [hours, minutes] = hhmm.split(':').map(Number);
   
-  // タイムゾーンを考慮して日時文字列を作成
-  const dateStr = Utilities.formatDate(baseDate, tz, 'yyyy-MM-dd');
-  const timeStr = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
-  const isoStr = `${dateStr}T${timeStr}`;
-  
-  // タイムゾーン付きでパース（重要：'Z'を付けずにローカル時刻として扱う）
+  // baseDateからyyyy-MM-dd形式の日付文字列を取得
   const year = baseDate.getFullYear();
-  const month = baseDate.getMonth();
+  const month = baseDate.getMonth() + 1; // 0-indexedなので+1
   const day = baseDate.getDate();
   
-  // Asia/Tokyoのオフセットを考慮してUTC時刻を計算
-  // Google Apps ScriptのSession.getScriptTimeZone()を使用
-  const scriptTz = Session.getScriptTimeZone();
+  // 日時文字列を作成（ISO 8601形式だが、タイムゾーンオフセットなし）
+  const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  const timeStr = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
   
-  // 指定されたタイムゾーンでの日時を作成
-  const result = new Date(year, month, day, hours, minutes, 0, 0);
+  // Google Apps Scriptの内部タイムゾーンでDateオブジェクトを作成
+  // Utilities.formatDate()を逆方向に使用してパース
+  const isoString = `${dateStr}T${timeStr}+09:00`; // 日本時間のオフセット
+  const result = new Date(isoString);
   
-  console.log(`dateAt_: ${dateStr} ${timeStr} (${tz}) → ${Utilities.formatDate(result, tz, 'yyyy-MM-dd HH:mm:ss Z')}`);
+  console.log(`dateAt_: 入力=${dateStr} ${timeStr} (${tz}), 出力=${Utilities.formatDate(result, tz, 'yyyy-MM-dd HH:mm:ss Z')}, getTime=${result.getTime()}`);
   return result;
 }
 
