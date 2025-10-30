@@ -568,15 +568,16 @@ function planFromRaw_(raw, previewOnly) {
     const dateTasks = tasksByDate[dateKey];
     const firstTask = dateTasks[0];
     
-    // この日の開始時刻を設定（現在時刻も考慮）
+    // 指定日の開始時刻を設定（基本は朝8時）
     let dayStartCursor = dateAt_(firstTask.dayAnchor, SETTINGS.WORK_START, tz);
     let dayEndTime = dateAt_(firstTask.dayAnchor, SETTINGS.WORK_END, tz);
     
-    // 現在時刻がその日の場合、現在時刻を考慮
-    const now = new Date();
+    // 【重要】当日かつ現在時刻が朝8時より後の場合のみ、現在時刻から開始
     if (isSameDate_(now, firstTask.dayAnchor, tz) && now > dayStartCursor) {
       dayStartCursor = now;
-      console.log(`当日のため現在時刻から開始: ${Utilities.formatDate(dayStartCursor, tz, 'yyyy-MM-dd HH:mm')}`);
+      console.log(`当日かつ現在時刻が営業開始時刻より後のため、現在時刻から開始: ${Utilities.formatDate(dayStartCursor, tz, 'yyyy-MM-dd HH:mm')}`);
+    } else {
+      console.log(`${dateKey} の朝 ${SETTINGS.WORK_START} から開始: ${Utilities.formatDate(dayStartCursor, tz, 'yyyy-MM-dd HH:mm')}`);
     }
     
     for (const p of dateTasks) {
