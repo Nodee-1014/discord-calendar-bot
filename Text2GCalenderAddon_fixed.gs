@@ -3,10 +3,11 @@
  * =====================================================================
  * 📅 主要機能:
  *   - テキストから自動でカレンダーイベント作成
- *   - 既存予定との競合を自動回避
+ *   - 既存予定との競合を自動回避（終日イベントは無視）
  *   - 優先度管理（A/B/C → ★★★/★★/★）
  *   - 日付指定（YYMMDD形式、相対日付対応）
  *   - 複数タスク自動分離
+ *   - スマート時刻配置（今日＝現在時刻、未来＝8:00から）
  *   - 週間レポート生成
  *   - Discord Bot連携用Web API
  * 
@@ -24,13 +25,25 @@
  *   - タスク間隔: 5分
  *   - 最大試行回数: 500回
  *   - 先読み日数: 30日
+ *   - 終日イベント: 自動除外（競合チェック対象外）
  * 
  * 📝 入力形式例:
  *   251031 細胞継代 1h A
  *   251031 C2T5657メンテ 2h B データ解析 1h A
  *   @14:00 会議 1h C
+ *   今日 レポート作成 2h B
  * 
- * 🚀 バージョン: 2.0 (2025-10-30)
+ * ✅ 動作確認済み機能:
+ *   ✓ 既存予定との競合自動回避
+ *   ✓ 終日イベント除外
+ *   ✓ 日付指定スケジューリング
+ *   ✓ 優先度ベース配置
+ *   ✓ 複数タスク自動分離
+ *   ✓ Discord Bot API統合
+ * 
+ * 🚀 バージョン: 2.1 Final (2025-10-30)
+ * 👤 開発: Discord Calendar Bot Project
+ * 📦 デプロイ: Railway (24/7運用)
  * =====================================================================
  */
 
@@ -51,6 +64,7 @@ const PRIORITY_ORDER = {
   'C': 3   // 低優先度 → ★
 };
 
+// Web API認証キー（本番環境では環境変数に移行推奨）
 const API_KEY = 'my_secure_api_key_2025_discord_bot';
 
 // =====================================================================
@@ -404,7 +418,7 @@ function findNextAvailableSlot_(cursor, dayEnd, minutes, tz, existingEvents, max
  * @return {Object} スロット情報
  */
 function forceScheduleOutsideWorkHours_(start, end, tz) {
-  console.log(`営業時間外への強制配置: ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
+  console.log(`⚠️ 営業時間外配置: ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')} (${SETTINGS.WORK_END}以降)`);
   const newCursor = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
   return { start, end, cursorDate: newCursor, dayEnd: end };
 }
@@ -417,7 +431,7 @@ function forceScheduleOutsideWorkHours_(start, end, tz) {
  */
 function moveToNextDay_(currentDate, tz) {
   const nextDay = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate() + 1);
-  console.log(`翌日に移行: ${Utilities.formatDate(nextDay, tz, 'yyyy-MM-dd')}`);
+  console.log(`📅 翌日に移行: ${Utilities.formatDate(nextDay, tz, 'yyyy-MM-dd (EEE)')} ${SETTINGS.WORK_START}～`);
   
   return {
     start: dateAt_(nextDay, SETTINGS.WORK_START, tz),
@@ -487,8 +501,10 @@ function findNextAvailableTime_(currentTime, dayEnd, existingEvents) {
  * @param {number} minutes - 所要時間
  */
 function throwNoAvailableSlotError_(tries, maxTries, daysChecked, minutes) {
-  const errorMsg = `空き時間が見つかりません。試行回数: ${tries}/${maxTries}, 確認日数: ${daysChecked}/${SETTINGS.MAX_SEARCH_DAYS}日, 所要時間: ${minutes}分`;
-  console.log(errorMsg);
+  const hours = (minutes / 60).toFixed(1);
+  const errorMsg = `⚠️ スケジュール配置エラー: ${hours}時間の空き時間が見つかりません（${daysChecked}日先まで検索済み）`;
+  console.log(`❌ ${errorMsg}`);
+  console.log(`   試行回数: ${tries}/${maxTries}, 所要時間: ${minutes}分`);
   throw new Error(errorMsg);
 }
 
@@ -1102,8 +1118,13 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
   } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: String(err) }))
-      .setMimeType(ContentService.MimeType.JSON);
+    console.error(`❌ API Error: ${err.message || String(err)}`);
+    return ContentService.createTextOutput(JSON.stringify({ 
+      ok: false, 
+      error: err.message || String(err),
+      timestamp: new Date().toISOString()
+    }))
+    .setMimeType(ContentService.MimeType.JSON);
   }
 }
 
@@ -1144,3 +1165,53 @@ function doGet(e) {
     .setMimeType(ContentService.MimeType.JSON);
   }
 }
+
+/* =====================================================================
+ * 📝 使用方法 & トラブルシューティング
+ * =====================================================================
+ * 
+ * 【基本的な使い方】
+ * 1. Google Apps Script エディタでこのコードをデプロイ
+ * 2. Web APIとしてデプロイし、URLを取得
+ * 3. Discord Botから以下の形式でPOSTリクエスト送信:
+ *    - URL: {デプロイURL}?key={API_KEY}
+ *    - Body: {"mode":"create", "text":"251031 細胞継代 1h A"}
+ * 
+ * 【入力形式】
+ * - 日付指定: YYMMDD形式 (例: 251031 = 2025年10月31日)
+ * - 相対日付: 今日、明日、明後日、月〜日
+ * - 時間: 1h, 2h, 30m など
+ * - 優先度: A (最高), B (中), C (低)
+ * - 複数タスク: 1行に複数記述可能（自動分離）
+ * 
+ * 【よくある問題と解決法】
+ * Q: イベントが明後日に作成される
+ * A: ✅修正済み - planFromRaw_で計算した日付をそのまま使用
+ * 
+ * Q: 終日イベントと重なってエラーになる
+ * A: ✅修正済み - 終日イベントは自動除外
+ * 
+ * Q: 既存予定と重複する
+ * A: ✅自動回避 - 5分間隔で空き時間を検索
+ * 
+ * Q: 営業時間外に配置される
+ * A: ✅設定可能 - SETTINGS.WORK_START / WORK_END で調整
+ * 
+ * 【デバッグ方法】
+ * - Google Apps Script ログビュー（実行 → ログを表示）で詳細確認
+ * - コンソールログに絵文字付きで処理状況を出力
+ * - タイムスタンプとイベント詳細を確認可能
+ * 
+ * 【パフォーマンス】
+ * - 最大試行回数: 500回
+ * - 最大検索日数: 14日先まで
+ * - 先読み日数: 30日分の既存予定を取得
+ * - タスク間隔: 5分（カスタマイズ可能）
+ * 
+ * 【セキュリティ】
+ * - API_KEY認証必須
+ * - 本番環境では環境変数化を推奨
+ * - HTTPS通信のみ許可
+ * 
+ * =====================================================================
+ */
