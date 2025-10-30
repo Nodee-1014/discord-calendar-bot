@@ -180,7 +180,7 @@ function isTimeSlotAvailable_(checkStart, checkEnd, existingEvents) {
   return true;
 }
 
-function findNextAvailableSlot_(cursor, dayEnd, minutes, tz, existingEvents, maxTries = 500) {
+function findNextAvailableSlot_(cursor, dayEnd, minutes, tz, existingEvents, maxTries = 500, allowOverflow = true) {
   let cur = new Date(cursor);
   let tries = 0;
   let daysChecked = 0;
@@ -189,8 +189,15 @@ function findNextAvailableSlot_(cursor, dayEnd, minutes, tz, existingEvents, max
   while (tries < maxTries && daysChecked < maxDays) {
     const end = new Date(cur.getTime() + minutes * 60000);
     
-    // 営業時間を超える場合は翌日へ
+    // 営業時間を超える場合の処理
     if (end > dayEnd) {
+      if (!allowOverflow) {
+        // 日付固定の場合は営業時間外でも強制配置
+        console.log(`営業時間外への強制配置: ${Utilities.formatDate(cur, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
+        const newCursor = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
+        return { start: cur, end, cursorDate: newCursor, dayEnd };
+      }
+      
       daysChecked++;
       if (daysChecked >= maxDays) {
         break; // 最大日数に達した場合はループを抜ける
@@ -306,6 +313,8 @@ function planFromRaw_(raw, previewOnly) {
       console.log(`警告: 長時間タスク "${parsed.title}" (${parsed.minutes}分) - 複数日に分割を推奨`);
     }
 
+    console.log(`パースされたタスク: "${parsed.title}" - 日付: ${parsed.dayAnchor ? Utilities.formatDate(parsed.dayAnchor, tz, 'yyyy-MM-dd') : 'なし'} - 優先度: ${parsed.priority}`);
+    
     parsedTasks.push({
       order: idx,
       title: parsed.title,
@@ -362,17 +371,21 @@ function planFromRaw_(raw, previewOnly) {
       let start, end;
       
       try {
-        const result = findNextAvailableSlot_(dayStartCursor, dayEndTime, p.minutes, tz, existingEvents);
+        // 日付指定タスクは指定日に固定（allowOverflow = false）
+        const result = findNextAvailableSlot_(dayStartCursor, dayEndTime, p.minutes, tz, existingEvents, 500, false);
         start = result.start;
         end = result.end;
         dayStartCursor = result.cursorDate; // この日の次のタスク用にカーソル更新
         
-        console.log(`${dateKey} タスク配置: "${p.title}" → ${Utilities.formatDate(start, tz, 'HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
+        console.log(`${dateKey} タスク配置: "${p.title}" → ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
       } catch (error) {
         console.log(`タスク "${p.title}" のスケジュール失敗: ${error.message}`);
+        // 指定日の範囲内で強制配置
         start = new Date(dayStartCursor);
         end = new Date(start.getTime() + p.minutes * 60000);
         dayStartCursor = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
+        
+        console.log(`${dateKey} 強制配置: "${p.title}" → ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
       }
       
       const item = { 
@@ -554,33 +567,42 @@ function parseLine_(line, now) {
 }
 
 function parseDateToken_(token, now) {
+  const tz = SETTINGS.TIMEZONE;
   const map = { '日':0,'月':1,'火':2,'水':3,'木':4,'金':5,'土':6 };
-  if (token === '今日') return new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  if (token === '明日') return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-  if (token === '明後日') return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2);
-  if (map.hasOwnProperty(token)) {
+  
+  let result;
+  
+  if (token === '今日') {
+    result = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  } else if (token === '明日') {
+    result = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  } else if (token === '明後日') {
+    result = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2);
+  } else if (map.hasOwnProperty(token)) {
     const targetW = map[token];
     const curW = now.getDay();
     let delta = (targetW - curW + 7) % 7;
     if (delta === 0) delta = 7;
-    return new Date(now.getFullYear(), now.getMonth(), now.getDate() + delta);
-  }
-  if (/^\d{4}-\d{2}-\d{2}$/.test(token)) {
+    result = new Date(now.getFullYear(), now.getMonth(), now.getDate() + delta);
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(token)) {
     const [Y,M,D] = token.split('-').map(Number);
-    return new Date(Y, M-1, D);
-  }
-  if (/^\d{1,2}\/\d{1,2}$/.test(token)) {
+    result = new Date(Y, M-1, D);
+  } else if (/^\d{1,2}\/\d{1,2}$/.test(token)) {
     const [M,D] = token.split('/').map(Number);
-    return new Date(now.getFullYear(), M-1, D);
-  }
-  // 251030形式 (YYMMDD)
-  if (/^\d{6}$/.test(token)) {
+    result = new Date(now.getFullYear(), M-1, D);
+  } else if (/^\d{6}$/.test(token)) {
+    // 251030形式 (YYMMDD)
     const Y = parseInt('20' + token.substring(0, 2), 10); // 25 -> 2025
     const M = parseInt(token.substring(2, 4), 10);        // 10
     const D = parseInt(token.substring(4, 6), 10);        // 30
-    return new Date(Y, M-1, D);
+    result = new Date(Y, M-1, D);
+    console.log(`日付パース: ${token} → ${Y}年${M}月${D}日 → ${Utilities.formatDate(result, tz, 'yyyy-MM-dd (EEE)')}`);
+  } else {
+    result = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   }
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  
+  console.log(`parseDateToken_: "${token}" → ${Utilities.formatDate(result, tz, 'yyyy-MM-dd (EEE)')}`);
+  return result;
 }
 
 // ===== Create / Undo =====
