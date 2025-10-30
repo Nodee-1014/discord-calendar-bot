@@ -1,255 +1,466 @@
-/* Text2GCalendar (Calendar Add-on) — 既存予定回避機能追加版
- * 新機能：
- * - 既存のカレンダー予定を読み込み
- * - 予定が入っている時間を自動的に回避
+/* =====================================================================
+ * Text2GCalendar (Calendar Add-on) — 既存予定回避機能追加版
+ * =====================================================================
+ * 機能概要：
+ * - 既存のカレンダー予定を読み込み、時間の競合を自動回避
  * - 空き時間に自動配置
- * - ★による優先度表記サポート
- * - A/B/C指定時に自動で★追加
+ * - ★による優先度表記サポート（A/B/C → ★★★/★★/★）
  * - 週間レポート機能
+ * - Discord Bot連携用Web API
+ * =====================================================================
  */
 
+// ===== グローバル設定 =====
 const SETTINGS = {
   TIMEZONE: 'Asia/Tokyo',
-  WORK_START: '08:00',
-  WORK_END:   '21:00',
-  GAP_MIN: 5,
-  LOOKAHEAD_DAYS: 30,
+  WORK_START: '08:00',      // 勤務開始時刻
+  WORK_END: '21:00',        // 勤務終了時刻
+  GAP_MIN: 5,               // タスク間の最小間隔（分）
+  LOOKAHEAD_DAYS: 30,       // 先読み日数
+  MAX_SEARCH_DAYS: 14,      // 最大検索日数
+  MAX_TRIES: 500            // 最大試行回数
 };
-const PRIORITY_ORDER = { 'A': 1, 'B': 2, 'C': 3 };
+
+const PRIORITY_ORDER = { 
+  'A': 1,  // 最高優先度 → ★★★
+  'B': 2,  // 中優先度 → ★★
+  'C': 3   // 低優先度 → ★
+};
+
 const API_KEY = 'my_secure_api_key_2025_discord_bot';
 
-// ===== 週間レポート機能 =====
+// =====================================================================
+// 週間レポート機能
+// =====================================================================
 
+/**
+ * 週間レポートを生成
+ * @param {Date} startDate - 開始日時
+ * @param {Date} endDate - 終了日時
+ * @return {Object} 統計情報を含むレポートオブジェクト
+ */
 function generateWeeklyReport_(startDate, endDate) {
   const tz = SETTINGS.TIMEZONE;
-  const cal = CalendarApp.getDefaultCalendar();
-  const events = cal.getEvents(startDate, endDate);
+  const calendar = CalendarApp.getDefaultCalendar();
+  const events = calendar.getEvents(startDate, endDate);
   
-  const stats = {
+  const report = {
     total: 0,
     byPriority: { A: 0, B: 0, C: 0, other: 0 },
     byDay: {},
     events: []
   };
   
-  events.forEach(ev => {
-    const title = ev.getTitle();
-    const start = ev.getStartTime();
-    const end = ev.getEndTime();
-    const duration = (end - start) / (1000 * 60 * 60);
+  events.forEach(event => {
+    const title = event.getTitle();
+    const start = event.getStartTime();
+    const end = event.getEndTime();
+    const durationHours = (end - start) / (1000 * 60 * 60);
     
-    let priority = 'other';
-    if (title.includes('★★★')) priority = 'A';
-    else if (title.includes('★★')) priority = 'B';
-    else if (title.includes('★')) priority = 'C';
+    // 優先度を判定
+    const priority = extractPriorityFromTitle_(title);
     
-    stats.total += duration;
-    stats.byPriority[priority] += duration;
+    // 統計を更新
+    report.total += durationHours;
+    report.byPriority[priority] += durationHours;
     
+    // 日別統計を更新
     const dayKey = Utilities.formatDate(start, tz, 'yyyy-MM-dd');
-    if (!stats.byDay[dayKey]) stats.byDay[dayKey] = 0;
-    stats.byDay[dayKey] += duration;
+    report.byDay[dayKey] = (report.byDay[dayKey] || 0) + durationHours;
     
-    stats.events.push({
+    // イベント詳細を追加
+    report.events.push({
       title: title,
       start: Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm'),
       end: Utilities.formatDate(end, tz, 'HH:mm'),
-      duration: duration.toFixed(1)
+      duration: durationHours.toFixed(1)
     });
   });
   
-  return stats;
+  return report;
 }
 
-// ===== スケジュール取得機能 =====
+/**
+ * タイトルから優先度を抽出
+ * @param {string} title - イベントタイトル
+ * @return {string} 優先度（'A', 'B', 'C', 'other'）
+ */
+function extractPriorityFromTitle_(title) {
+  if (title.includes('★★★')) return 'A';
+  if (title.includes('★★')) return 'B';
+  if (title.includes('★')) return 'C';
+  return 'other';
+}
 
+// =====================================================================
+// スケジュール取得機能
+// =====================================================================
+
+/**
+ * 指定日のスケジュールを取得
+ * @param {string} dateStr - 日付文字列（'今日', '明日', 'yyyy-MM-dd', 'M/D'など）
+ * @param {number} daysCount - 取得する日数
+ * @return {Array<Object>} イベントのリスト
+ */
 function getScheduleForDate_(dateStr, daysCount) {
   const tz = SETTINGS.TIMEZONE;
   const now = new Date();
   
-  let targetDate;
-  if (dateStr === '今日' || dateStr === 'today') {
-    targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  } else if (dateStr === '明日' || dateStr === 'tomorrow') {
-    targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-  } else if (dateStr === '明後日') {
-    targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2);
-  } else if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-    const [Y, M, D] = dateStr.split('-').map(Number);
-    targetDate = new Date(Y, M - 1, D);
-  } else if (/^\d{1,2}\/\d{1,2}$/.test(dateStr)) {
-    const [M, D] = dateStr.split('/').map(Number);
-    targetDate = new Date(now.getFullYear(), M - 1, D);
-  } else {
-    targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  }
+  // 日付文字列をDateオブジェクトに変換
+  const targetDate = parseDateString_(dateStr, now);
   
+  // 日付範囲を設定（0時から指定日数後の23:59:59まで）
   const startDate = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0);
   const endDate = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate() + daysCount, 23, 59, 59);
   
-  const cal = CalendarApp.getDefaultCalendar();
-  const events = cal.getEvents(startDate, endDate);
+  // カレンダーからイベントを取得
+  const calendar = CalendarApp.getDefaultCalendar();
+  const events = calendar.getEvents(startDate, endDate);
   
+  // 開始時刻でソート
   events.sort((a, b) => a.getStartTime() - b.getStartTime());
   
-  const result = events.map(ev => {
-    const start = ev.getStartTime();
-    const end = ev.getEndTime();
-    
-    return {
-      title: ev.getTitle(),
-      start: Utilities.formatDate(start, tz, "yyyy-MM-dd'T'HH:mm:ss"),
-      end: Utilities.formatDate(end, tz, "yyyy-MM-dd'T'HH:mm:ss"),
-      startTime: Utilities.formatDate(start, tz, "HH:mm"),
-      endTime: Utilities.formatDate(end, tz, "HH:mm")
-    };
-  });
-  
-  return result;
+  // フォーマットして返す
+  return events.map(event => formatEventForResponse_(event, tz));
 }
 
-// ===== 既存予定取得機能 =====
+/**
+ * 日付文字列をパース
+ * @param {string} dateStr - 日付文字列
+ * @param {Date} baseDate - 基準日
+ * @return {Date} パースされた日付
+ */
+function parseDateString_(dateStr, baseDate) {
+  const now = baseDate || new Date();
+  
+  // 相対日付
+  if (dateStr === '今日' || dateStr === 'today') {
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  }
+  if (dateStr === '明日' || dateStr === 'tomorrow') {
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  }
+  if (dateStr === '明後日') {
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 2);
+  }
+  
+  // yyyy-MM-dd形式
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    return new Date(year, month - 1, day);
+  }
+  
+  // M/D形式
+  if (/^\d{1,2}\/\d{1,2}$/.test(dateStr)) {
+    const [month, day] = dateStr.split('/').map(Number);
+    return new Date(now.getFullYear(), month - 1, day);
+  }
+  
+  // デフォルトは今日
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
 
+/**
+ * イベントをレスポンス用にフォーマット
+ * @param {CalendarEvent} event - カレンダーイベント
+ * @param {string} timezone - タイムゾーン
+ * @return {Object} フォーマットされたイベント情報
+ */
+function formatEventForResponse_(event, timezone) {
+  const start = event.getStartTime();
+  const end = event.getEndTime();
+  
+  return {
+    title: event.getTitle(),
+    start: Utilities.formatDate(start, timezone, "yyyy-MM-dd'T'HH:mm:ss"),
+    end: Utilities.formatDate(end, timezone, "yyyy-MM-dd'T'HH:mm:ss"),
+    startTime: Utilities.formatDate(start, timezone, "HH:mm"),
+    endTime: Utilities.formatDate(end, timezone, "HH:mm")
+  };
+}
+
+// =====================================================================
+// 既存予定取得機能
+// =====================================================================
+
+/**
+ * 指定期間の既存イベントを取得
+ * @param {Date} startDate - 開始日時
+ * @param {Date} endDate - 終了日時
+ * @return {Array<Object>} イベントのリスト
+ */
 function getExistingEvents_(startDate, endDate) {
-  const cal = CalendarApp.getDefaultCalendar();
-  const events = cal.getEvents(startDate, endDate);
-  return events.map(ev => ({
-    title: ev.getTitle(),
-    start: ev.getStartTime(),
-    end: ev.getEndTime()
+  const calendar = CalendarApp.getDefaultCalendar();
+  const events = calendar.getEvents(startDate, endDate);
+  
+  return events.map(event => ({
+    title: event.getTitle(),
+    start: event.getStartTime(),
+    end: event.getEndTime()
   }));
 }
 
-// ===== 複数タスク分離機能 =====
+// =====================================================================
+// 複数タスク分離機能
+// =====================================================================
 
+/**
+ * 1行に複数のタスクが含まれている場合に分離
+ * 例: "251030 細胞継代 1h A C2T5657メンテ 1h A" → ["251030 細胞継代 1h A", "251030 C2T5657メンテ 1h A"]
+ * @param {string} line - 入力行
+ * @return {Array<string>} 分離されたタスクの配列
+ */
 function splitMultipleTasks_(line) {
-  // 日付プレフィックス（例：251030）を抽出
-  let datePrefix = '';
-  const dateMatch = line.match(/^(\d{6})\s*/);
-  if (dateMatch) {
-    datePrefix = dateMatch[1] + ' ';
-    line = line.substring(dateMatch[0].length);
+  // 日付プレフィックスを抽出（例：251030）
+  const { datePrefix, remainingLine } = extractDatePrefix_(line);
+  
+  // タスクパターンでマッチング
+  const tasks = extractTasksFromLine_(remainingLine);
+  
+  // マッチしない場合は元の行をそのまま返す
+  if (tasks.length === 0) {
+    return [datePrefix + remainingLine];
   }
   
-  // より厳密な時間+優先度パターンでタスクを分離
-  // "タスク名 1h A タスク名2 1h A" のような形式を想定
+  // 各タスクに日付プレフィックスを付けて返す
+  return tasks.map(task => datePrefix + task.fullTask);
+}
+
+/**
+ * 行から日付プレフィックスを抽出
+ * @param {string} line - 入力行
+ * @return {Object} {datePrefix: string, remainingLine: string}
+ */
+function extractDatePrefix_(line) {
+  const dateMatch = line.match(/^(\d{6})\s*/);
+  
+  if (dateMatch) {
+    return {
+      datePrefix: dateMatch[1] + ' ',
+      remainingLine: line.substring(dateMatch[0].length)
+    };
+  }
+  
+  return {
+    datePrefix: '',
+    remainingLine: line
+  };
+}
+
+/**
+ * 行からタスク情報を抽出
+ * パターン: "タスク名 時間 優先度"（例: "細胞継代 1h A"）
+ * @param {string} line - 入力行
+ * @return {Array<Object>} タスク情報の配列
+ */
+function extractTasksFromLine_(line) {
   const taskPattern = /(.+?)\s+(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours|時間|m|min|mins|minute|minutes|分)\s*([ABC]?)\s*/gi;
-  let matches = [];
+  const tasks = [];
   let match;
   
-  // すべてのタスクパターンを抽出
   while ((match = taskPattern.exec(line)) !== null) {
-    const taskName = match[1].trim();
+    const rawTaskName = match[1].trim();
     const timeValue = match[2];
     const timeUnit = match[0].match(/(h|hr|hrs|hour|hours|時間|m|min|mins|minute|minutes|分)/i)[0];
     const priority = match[3] || 'C';
     
-    // タスク名を整理（前のタスクの優先度文字を除去）
-    const cleanTaskName = taskName.replace(/\s+[ABC]\s*$/, '').trim();
+    // タスク名をクリーンアップ（前のタスクの優先度文字を除去）
+    const taskName = cleanTaskName_(rawTaskName);
     
-    matches.push({
-      taskName: cleanTaskName,
+    tasks.push({
+      taskName: taskName,
       timeString: `${timeValue}${timeUnit}`,
       priority: priority,
-      fullTask: `${cleanTaskName} ${timeValue}${timeUnit} ${priority}`.trim()
+      fullTask: `${taskName} ${timeValue}${timeUnit} ${priority}`.trim()
     });
   }
   
-  if (matches.length === 0) {
-    // パターンマッチしない場合は元の行をそのまま返す
-    return [datePrefix + line];
-  }
-  
-  // 各タスクを独立した行として返す
-  return matches.map(match => datePrefix + match.fullTask);
+  return tasks;
 }
 
-// findTaskBoundary_ 関数は新しい分離ロジックで不要になったため削除
+/**
+ * タスク名をクリーンアップ
+ * @param {string} taskName - クリーンアップするタスク名
+ * @return {string} クリーンアップされたタスク名
+ */
+function cleanTaskName_(taskName) {
+  return taskName.replace(/\s+[ABC]\s*$/, '').trim();
+}
 
+// =====================================================================
+// 時間スロット検索機能
+// =====================================================================
+
+/**
+ * 指定時間帯が空いているかチェック
+ * @param {Date} checkStart - チェック開始時刻
+ * @param {Date} checkEnd - チェック終了時刻
+ * @param {Array<Object>} existingEvents - 既存イベントのリスト
+ * @return {boolean} 空いている場合はtrue
+ */
 function isTimeSlotAvailable_(checkStart, checkEnd, existingEvents) {
-  for (const ev of existingEvents) {
-    const evStart = new Date(ev.start);
-    const evEnd = new Date(ev.end);
+  for (const event of existingEvents) {
+    const eventStart = new Date(event.start);
+    const eventEnd = new Date(event.end);
     
-    if ((checkStart >= evStart && checkStart < evEnd) ||
-        (checkEnd > evStart && checkEnd <= evEnd) ||
-        (checkStart <= evStart && checkEnd >= evEnd)) {
+    // 時間帯の重複をチェック
+    const hasOverlap = (
+      (checkStart >= eventStart && checkStart < eventEnd) ||    // 開始時刻が既存イベント内
+      (checkEnd > eventStart && checkEnd <= eventEnd) ||        // 終了時刻が既存イベント内
+      (checkStart <= eventStart && checkEnd >= eventEnd)        // 既存イベント全体を含む
+    );
+    
+    if (hasOverlap) {
       return false;
     }
   }
+  
   return true;
 }
 
-function findNextAvailableSlot_(cursor, dayEnd, minutes, tz, existingEvents, maxTries = 500, allowOverflow = true) {
-  let cur = new Date(cursor);
+/**
+ * 次の利用可能な時間スロットを検索
+ * @param {Date} cursor - 検索開始時刻
+ * @param {Date} dayEnd - その日の終了時刻
+ * @param {number} minutes - 必要な時間（分）
+ * @param {string} tz - タイムゾーン
+ * @param {Array<Object>} existingEvents - 既存イベントのリスト
+ * @param {number} maxTries - 最大試行回数
+ * @param {boolean} allowOverflow - 日を跨いだ配置を許可するか
+ * @return {Object} {start: Date, end: Date, cursorDate: Date, dayEnd: Date}
+ */
+function findNextAvailableSlot_(cursor, dayEnd, minutes, tz, existingEvents, maxTries = SETTINGS.MAX_TRIES, allowOverflow = true) {
+  let currentTime = new Date(cursor);
+  let currentDayEnd = dayEnd;
   let tries = 0;
   let daysChecked = 0;
-  const maxDays = 14; // 最大2週間先まで検索
   
-  while (tries < maxTries && daysChecked < maxDays) {
-    const end = new Date(cur.getTime() + minutes * 60000);
+  while (tries < maxTries && daysChecked < SETTINGS.MAX_SEARCH_DAYS) {
+    const proposedEnd = new Date(currentTime.getTime() + minutes * 60000);
     
     // 営業時間を超える場合の処理
-    if (end > dayEnd) {
+    if (proposedEnd > currentDayEnd) {
       if (!allowOverflow) {
         // 日付固定の場合は営業時間外でも強制配置
-        console.log(`営業時間外への強制配置: ${Utilities.formatDate(cur, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
-        const newCursor = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
-        return { start: cur, end, cursorDate: newCursor, dayEnd };
+        return forceScheduleOutsideWorkHours_(currentTime, proposedEnd, tz);
       }
       
+      // 翌日に移動
+      const nextDayInfo = moveToNextDay_(currentTime, tz);
+      currentTime = nextDayInfo.start;
+      currentDayEnd = nextDayInfo.end;
       daysChecked++;
-      if (daysChecked >= maxDays) {
-        break; // 最大日数に達した場合はループを抜ける
-      }
-      
-      const next = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + 1);
-      const nextStart = dateAt_(next, SETTINGS.WORK_START, tz);
-      const nextEnd = dateAt_(next, SETTINGS.WORK_END, tz);
-      cur = nextStart;
-      dayEnd = nextEnd;
-      
-      console.log(`翌日に移行: ${Utilities.formatDate(next, tz, 'yyyy-MM-dd')}`);
       tries++;
       continue;
     }
     
     // この時間帯が空いているかチェック
-    if (isTimeSlotAvailable_(cur, end, existingEvents)) {
-      const newCursor = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
-      return { start: cur, end, cursorDate: newCursor, dayEnd };
+    if (isTimeSlotAvailable_(currentTime, proposedEnd, existingEvents)) {
+      return createSlotResult_(currentTime, proposedEnd, currentDayEnd);
     }
     
-    // 空いていない場合、次の空き時間を探す
-    let nextAvailableTime = null;
-    const currentDay = cur.getDate();
-    
-    // 当日の既存予定で、現在時刻より後で最も早く終わる予定を探す
-    for (const ev of existingEvents) {
-      const evStart = new Date(ev.start);
-      const evEnd = new Date(ev.end);
-      
-      // 同じ日の予定のみ対象
-      if (evStart.getDate() === currentDay && evStart.getMonth() === cur.getMonth() && evStart.getFullYear() === cur.getFullYear()) {
-        if (evEnd > cur && (!nextAvailableTime || evEnd < nextAvailableTime)) {
-          nextAvailableTime = new Date(evEnd.getTime() + SETTINGS.GAP_MIN * 60000);
-        }
-      }
-    }
-    
-    if (nextAvailableTime && nextAvailableTime <= dayEnd) {
-      // 次の空き時間に移動
-      cur = nextAvailableTime;
-    } else {
-      // 次の空き時間がない場合、少しずつ進める
-      cur = new Date(cur.getTime() + SETTINGS.GAP_MIN * 60000);
-    }
-    
+    // 次の空き時間を検索
+    const nextTime = findNextAvailableTime_(currentTime, currentDayEnd, existingEvents);
+    currentTime = nextTime;
     tries++;
   }
   
-  // エラーメッセージを詳細化
-  const errorMsg = `空き時間が見つかりません。試行回数: ${tries}/${maxTries}, 確認日数: ${daysChecked}/${maxDays}日, 所要時間: ${minutes}分`;
+  // 空き時間が見つからない場合はエラー
+  throwNoAvailableSlotError_(tries, maxTries, daysChecked, minutes);
+}
+
+/**
+ * 営業時間外に強制スケジュール
+ * @param {Date} start - 開始時刻
+ * @param {Date} end - 終了時刻
+ * @param {string} tz - タイムゾーン
+ * @return {Object} スロット情報
+ */
+function forceScheduleOutsideWorkHours_(start, end, tz) {
+  console.log(`営業時間外への強制配置: ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
+  const newCursor = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
+  return { start, end, cursorDate: newCursor, dayEnd: end };
+}
+
+/**
+ * 翌日の営業開始時刻に移動
+ * @param {Date} currentDate - 現在の日付
+ * @param {string} tz - タイムゾーン
+ * @return {Object} {start: Date, end: Date}
+ */
+function moveToNextDay_(currentDate, tz) {
+  const nextDay = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate() + 1);
+  console.log(`翌日に移行: ${Utilities.formatDate(nextDay, tz, 'yyyy-MM-dd')}`);
+  
+  return {
+    start: dateAt_(nextDay, SETTINGS.WORK_START, tz),
+    end: dateAt_(nextDay, SETTINGS.WORK_END, tz)
+  };
+}
+
+/**
+ * スロット検索結果を作成
+ * @param {Date} start - 開始時刻
+ * @param {Date} end - 終了時刻
+ * @param {Date} dayEnd - その日の終了時刻
+ * @return {Object} スロット情報
+ */
+function createSlotResult_(start, end, dayEnd) {
+  const nextCursor = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
+  return { start, end, cursorDate: nextCursor, dayEnd };
+}
+
+/**
+ * 次の利用可能な時刻を検索
+ * @param {Date} currentTime - 現在時刻
+ * @param {Date} dayEnd - その日の終了時刻
+ * @param {Array<Object>} existingEvents - 既存イベントのリスト
+ * @return {Date} 次の利用可能な時刻
+ */
+function findNextAvailableTime_(currentTime, dayEnd, existingEvents) {
+  const currentDay = currentTime.getDate();
+  const currentMonth = currentTime.getMonth();
+  const currentYear = currentTime.getFullYear();
+  
+  let earliestEndTime = null;
+  
+  // 当日の既存予定で、現在時刻より後で最も早く終わる予定を探す
+  for (const event of existingEvents) {
+    const eventStart = new Date(event.start);
+    const eventEnd = new Date(event.end);
+    
+    // 同じ日の予定のみ対象
+    const isSameDay = (
+      eventStart.getDate() === currentDay &&
+      eventStart.getMonth() === currentMonth &&
+      eventStart.getFullYear() === currentYear
+    );
+    
+    if (isSameDay && eventEnd > currentTime) {
+      if (!earliestEndTime || eventEnd < earliestEndTime) {
+        earliestEndTime = eventEnd;
+      }
+    }
+  }
+  
+  // 次の空き時間が見つかった場合
+  if (earliestEndTime && earliestEndTime <= dayEnd) {
+    return new Date(earliestEndTime.getTime() + SETTINGS.GAP_MIN * 60000);
+  }
+  
+  // 見つからない場合は少しずつ進める
+  return new Date(currentTime.getTime() + SETTINGS.GAP_MIN * 60000);
+}
+
+/**
+ * 空き時間なしエラーをスロー
+ * @param {number} tries - 試行回数
+ * @param {number} maxTries - 最大試行回数
+ * @param {number} daysChecked - 確認した日数
+ * @param {number} minutes - 所要時間
+ */
+function throwNoAvailableSlotError_(tries, maxTries, daysChecked, minutes) {
+  const errorMsg = `空き時間が見つかりません。試行回数: ${tries}/${maxTries}, 確認日数: ${daysChecked}/${SETTINGS.MAX_SEARCH_DAYS}日, 所要時間: ${minutes}分`;
   console.log(errorMsg);
   throw new Error(errorMsg);
 }
