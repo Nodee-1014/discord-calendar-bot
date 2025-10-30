@@ -10,8 +10,8 @@
 
 const SETTINGS = {
   TIMEZONE: 'Asia/Tokyo',
-  WORK_START: '09:00',
-  WORK_END:   '19:00',
+  WORK_START: '08:00',
+  WORK_END:   '21:00',
   GAP_MIN: 5,
   LOOKAHEAD_DAYS: 30,
 };
@@ -118,6 +118,89 @@ function getExistingEvents_(startDate, endDate) {
     start: ev.getStartTime(),
     end: ev.getEndTime()
   }));
+}
+
+// ===== 複数タスク分離機能 =====
+
+function splitMultipleTasks_(line) {
+  // 日付プレフィックス（例：251030）を抽出
+  let datePrefix = '';
+  const dateMatch = line.match(/^(\d{6})\s*/);
+  if (dateMatch) {
+    datePrefix = dateMatch[1] + ' ';
+    line = line.substring(dateMatch[0].length);
+  }
+  
+  // 時間パターンを見つけて分割点を特定
+  const timePatterns = /(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours|時間|m|min|mins|minute|minutes|分)\s*([ABC]?)/gi;
+  let matches = [];
+  let match;
+  
+  while ((match = timePatterns.exec(line)) !== null) {
+    matches.push({
+      index: match.index,
+      fullMatch: match[0],
+      endIndex: match.index + match[0].length
+    });
+  }
+  
+  if (matches.length <= 1) {
+    // 1つまたは0個のタスクなので、そのまま返す
+    return [datePrefix + line];
+  }
+  
+  // 複数のタイムパターンが見つかった場合、分割
+  let tasks = [];
+  let lastEnd = 0;
+  
+  for (let i = 0; i < matches.length; i++) {
+    const currentMatch = matches[i];
+    const nextMatch = matches[i + 1];
+    
+    let taskEnd;
+    if (nextMatch) {
+      // 次のタスクの開始位置を見つける
+      taskEnd = findTaskBoundary_(line, currentMatch.endIndex, nextMatch.index);
+    } else {
+      // 最後のタスク
+      taskEnd = line.length;
+    }
+    
+    const taskText = line.substring(lastEnd, taskEnd).trim();
+    if (taskText) {
+      tasks.push(datePrefix + taskText);
+    }
+    lastEnd = taskEnd;
+  }
+  
+  return tasks.length > 0 ? tasks : [datePrefix + line];
+}
+
+function findTaskBoundary_(line, currentEnd, nextStart) {
+  // 現在のタスクの終わりを探す
+  // 優先度文字（A, B, C）の後ろか、明らかな区切り文字まで
+  let boundary = currentEnd;
+  
+  // 優先度文字を探す
+  for (let i = currentEnd; i < nextStart; i++) {
+    const char = line[i];
+    if (/[ABC]/.test(char)) {
+      // A, B, Cの後の空白までを含める
+      boundary = i + 1;
+      while (boundary < nextStart && /\s/.test(line[boundary])) {
+        boundary++;
+      }
+      break;
+    }
+    // 日本語文字で区切られている場合
+    if (/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]/.test(char) && 
+        i > currentEnd + 3) {
+      boundary = i;
+      break;
+    }
+  }
+  
+  return Math.min(boundary, nextStart);
 }
 
 function isTimeSlotAvailable_(checkStart, checkEnd, existingEvents) {
@@ -234,11 +317,20 @@ function planFromRaw_(raw, previewOnly) {
   
   console.log(`既存予定: ${existingEvents.length}件取得 (${Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm')} から ${Utilities.formatDate(lookAheadEnd, tz, 'yyyy-MM-dd')} まで)`);
 
-  const lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  // 行の分離を改善：改行 または 複数タスクを自動分離
+  let lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  
+  // 単一行に複数のタスクがある場合の分離処理
+  let expandedLines = [];
+  for (const line of lines) {
+    const splitTasks = splitMultipleTasks_(line);
+    expandedLines = expandedLines.concat(splitTasks);
+  }
+  
   let parsedTasks = [];
   let idx = 0;
 
-  for (const line0 of lines) {
+  for (const line0 of expandedLines) {
     idx++;
     if (/^~~.*~~$/.test(line0)) continue;
 
@@ -347,12 +439,17 @@ function parseLine_(line, now) {
   else if (mn) minutes = parseInt(mn[1], 10);
   if (!minutes || minutes <= 0) return null;
 
-  // 日付
+  // 日付（@なしの251030形式も対応）
   let dayAnchor = null;
-  const mDate = line.match(/@([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}\/[0-9]{1,2}|今日|明日|明後日|月|火|水|木|金|土|日)/);
+  const mDate = line.match(/@?([0-9]{6}|[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}\/[0-9]{1,2}|今日|明日|明後日|月|火|水|木|金|土|日)/);
   if (mDate) {
     dayAnchor = parseDateToken_(mDate[1], now);
-    line = line.replace('@' + mDate[1], '').trim();
+    if (line.includes('@' + mDate[1])) {
+      line = line.replace('@' + mDate[1], '').trim();
+    } else {
+      // @なしの251030形式の場合
+      line = line.replace(mDate[1], '').trim();
+    }
   }
 
   // 時刻
@@ -425,6 +522,13 @@ function parseDateToken_(token, now) {
   if (/^\d{1,2}\/\d{1,2}$/.test(token)) {
     const [M,D] = token.split('/').map(Number);
     return new Date(now.getFullYear(), M-1, D);
+  }
+  // 251030形式 (YYMMDD)
+  if (/^\d{6}$/.test(token)) {
+    const Y = parseInt('20' + token.substring(0, 2), 10); // 25 -> 2025
+    const M = parseInt(token.substring(2, 4), 10);        // 10
+    const D = parseInt(token.substring(4, 6), 10);        // 30
+    return new Date(Y, M-1, D);
   }
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
 }

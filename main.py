@@ -103,12 +103,9 @@ def render_preview(preview_items):
     return "\n".join(lines) if lines else "(なし)"
 
 @bot.tree.command(name="t2g", description="Text→Google Calendar")
-@app_commands.describe(mode="preview か create", text="改行でタスク（例: 'Task A 1h A\\nTask B 30min B'）")
-async def t2g(interaction: discord.Interaction, mode: str, text: str):
-    mode = mode.lower().strip()
-    if mode not in ("preview", "create"):
-        await interaction.response.send_message("mode は preview か create を指定してください。", ephemeral=True)
-        return
+@app_commands.describe(text="改行でタスク（例: '251030 タスクA 1h A\\nタスクB 30min B'）")
+async def t2g(interaction: discord.Interaction, text: str):
+    mode = "create"  # プレビューモードを削除、常に作成モードに
 
     await interaction.response.defer(thinking=True, ephemeral=True)
     try:
@@ -121,36 +118,32 @@ async def t2g(interaction: discord.Interaction, mode: str, text: str):
             await interaction.followup.send(f"エラー: {error_msg}", ephemeral=True)
             return
 
-        if mode == "preview":
-            out = render_preview(resp.get("preview", []))
-            await interaction.followup.send(f"**プレビュー**\n```\n{out}\n```", ephemeral=True)
-        else:
-            created = resp.get("created", [])
-            if not created:
-                await interaction.followup.send("作成対象がありません。", ephemeral=True)
-                return
+        created = resp.get("created", [])
+        if not created:
+            await interaction.followup.send("作成対象がありません。", ephemeral=True)
+            return
+        
+        # イベント情報とカレンダーリンクを生成
+        lines = []
+        calendar_links = []
+        
+        for it in created:
+            s = str(it['start']).replace('T',' ').split('.')[0]
+            e = str(it['end']).replace('T',' ').split('.')[0]
+            lines.append(f"- {it['title']}: {s} → {e}")
             
-            # イベント情報とカレンダーリンクを生成
-            lines = []
-            calendar_links = []
-            
-            for it in created:
-                s = str(it['start']).replace('T',' ').split('.')[0]
-                e = str(it['end']).replace('T',' ').split('.')[0]
-                lines.append(f"- {it['title']}: {s} → {e}")
-                
-                # Googleカレンダーリンクを生成
-                calendar_url = generate_calendar_link(it['title'], it['start'], it['end'])
-                calendar_links.append(f"📅 [{it['title']}](<{calendar_url}>)")
-            
-            # 結果メッセージを作成
-            result_msg = "**✅ 作成しました**\n```\n" + "\n".join(lines) + "\n```"
-            
-            # カレンダーリンクを追加
-            if calendar_links:
-                result_msg += "\n\n**🔗 Googleカレンダーで開く:**\n" + "\n".join(calendar_links)
-            
-            await interaction.followup.send(result_msg, ephemeral=True)
+            # Googleカレンダーリンクを生成
+            calendar_url = generate_calendar_link(it['title'], it['start'], it['end'])
+            calendar_links.append(f"📅 [{it['title']}](<{calendar_url}>)")
+        
+        # 結果メッセージを作成
+        result_msg = "**✅ 作成しました**\n```\n" + "\n".join(lines) + "\n```"
+        
+        # カレンダーリンクを追加
+        if calendar_links:
+            result_msg += "\n\n**🔗 Googleカレンダーで開く:**\n" + "\n".join(calendar_links)
+        
+        await interaction.followup.send(result_msg, ephemeral=True)
     except requests.exceptions.HTTPError as e:
         status_code = getattr(e.response, 'status_code', 'Unknown')
         error_msg = f"HTTP Error {status_code}"
