@@ -7,6 +7,13 @@
  * - ★による優先度表記サポート（A/B/C → ★★★/★★/★）
  * - 週間レポート機能
  * - Discord Bot連携用Web API
+ * 
+ * 【重要】appsscript.jsonで以下を設定すること：
+ * {
+ *   "timeZone": "Asia/Tokyo",
+ *   "dependencies": {},
+ *   "exceptionLogging": "STACKDRIVER"
+ * }
  * =====================================================================
  */
 
@@ -890,12 +897,35 @@ function renderLines_(arr) {
   ).join('\n');
 }
 
+/**
+ * 指定した日付と時刻でDateオブジェクトを作成（タイムゾーン考慮）
+ * @param {Date} baseDate - 基準日付
+ * @param {string} hhmm - 時刻（HH:MM形式）
+ * @param {string} tz - タイムゾーン
+ * @return {Date} 作成されたDateオブジェクト
+ */
 function dateAt_(baseDate, hhmm, tz) {
-  const base = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
-  const [H,M] = hhmm.split(':').map(Number);
-  const d = new Date(base.getFullYear(), base.getMonth(), base.getDate(), H, M, 0, 0);
-  const iso = Utilities.formatDate(d, tz, "yyyy-MM-dd'T'HH:mm:ss");
-  return new Date(iso);
+  const [hours, minutes] = hhmm.split(':').map(Number);
+  
+  // タイムゾーンを考慮して日時文字列を作成
+  const dateStr = Utilities.formatDate(baseDate, tz, 'yyyy-MM-dd');
+  const timeStr = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`;
+  const isoStr = `${dateStr}T${timeStr}`;
+  
+  // タイムゾーン付きでパース（重要：'Z'を付けずにローカル時刻として扱う）
+  const year = baseDate.getFullYear();
+  const month = baseDate.getMonth();
+  const day = baseDate.getDate();
+  
+  // Asia/Tokyoのオフセットを考慮してUTC時刻を計算
+  // Google Apps ScriptのSession.getScriptTimeZone()を使用
+  const scriptTz = Session.getScriptTimeZone();
+  
+  // 指定されたタイムゾーンでの日時を作成
+  const result = new Date(year, month, day, hours, minutes, 0, 0);
+  
+  console.log(`dateAt_: ${dateStr} ${timeStr} (${tz}) → ${Utilities.formatDate(result, tz, 'yyyy-MM-dd HH:mm:ss Z')}`);
+  return result;
 }
 
 // ===== Add-on UI =====
