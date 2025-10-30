@@ -317,7 +317,30 @@ function planFromRaw_(raw, previewOnly) {
     });
   }
 
-  parsedTasks.sort((a,b)=>{
+  // 日付別にタスクをグループ化
+  const tasksByDate = {};
+  const noDateTasks = [];
+  
+  for (const task of parsedTasks) {
+    if (task.dayAnchor) {
+      const dateKey = Utilities.formatDate(task.dayAnchor, tz, 'yyyy-MM-dd');
+      if (!tasksByDate[dateKey]) {
+        tasksByDate[dateKey] = [];
+      }
+      tasksByDate[dateKey].push(task);
+    } else {
+      noDateTasks.push(task);
+    }
+  }
+  
+  // 各グループ内で優先度順にソート
+  for (const dateKey in tasksByDate) {
+    tasksByDate[dateKey].sort((a,b)=>{
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return a.order - b.order;
+    });
+  }
+  noDateTasks.sort((a,b)=>{
     if (a.priority !== b.priority) return a.priority - b.priority;
     return a.order - b.order;
   });
@@ -325,7 +348,61 @@ function planFromRaw_(raw, previewOnly) {
   const items = [];
   const preview = [];
   
-  for (const p of parsedTasks) {
+  // 日付指定タスクを先に処理
+  for (const dateKey in tasksByDate) {
+    console.log(`\n=== ${dateKey} のタスク処理開始 ===`);
+    const dateTasks = tasksByDate[dateKey];
+    const firstTask = dateTasks[0];
+    
+    // この日の開始時刻を設定
+    let dayStartCursor = dateAt_(firstTask.dayAnchor, SETTINGS.WORK_START, tz);
+    let dayEndTime = dateAt_(firstTask.dayAnchor, SETTINGS.WORK_END, tz);
+    
+    for (const p of dateTasks) {
+      let start, end;
+      
+      try {
+        const result = findNextAvailableSlot_(dayStartCursor, dayEndTime, p.minutes, tz, existingEvents);
+        start = result.start;
+        end = result.end;
+        dayStartCursor = result.cursorDate; // この日の次のタスク用にカーソル更新
+        
+        console.log(`${dateKey} タスク配置: "${p.title}" → ${Utilities.formatDate(start, tz, 'HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
+      } catch (error) {
+        console.log(`タスク "${p.title}" のスケジュール失敗: ${error.message}`);
+        start = new Date(dayStartCursor);
+        end = new Date(start.getTime() + p.minutes * 60000);
+        dayStartCursor = new Date(end.getTime() + SETTINGS.GAP_MIN * 60000);
+      }
+      
+      const item = { 
+        title: p.title, 
+        minutes: p.minutes, 
+        start, 
+        end,
+        priority: p.priority,
+        priorityLabel: p.priorityLabel
+      };
+      items.push(item);
+      
+      let previewTitle = item.title;
+      if (!previewTitle.includes('★')) {
+        const priorityLabel = p.priorityLabel || 'C';
+        if (priorityLabel === 'A') previewTitle += ' ★★★';
+        else if (priorityLabel === 'B') previewTitle += ' ★★';
+        else if (priorityLabel === 'C') previewTitle += ' ★';
+      }
+      
+      preview.push({ 
+        title: previewTitle,
+        start: item.start, 
+        end: item.end 
+      });
+    }
+  }
+  
+  // 日付指定なしのタスクを処理
+  for (const p of noDateTasks) {
     let start, end;
     
     if (p.fixedStart) {
@@ -340,16 +417,25 @@ function planFromRaw_(raw, previewOnly) {
       dayEnd = dateAt_(cursorDate, SETTINGS.WORK_END, tz);
     } else {
       if (p.dayAnchor) {
-        // 指定された日の開始時刻に設定
-        cursorDate = dateAt_(p.dayAnchor, SETTINGS.WORK_START, tz);
-        dayEnd = dateAt_(p.dayAnchor, SETTINGS.WORK_END, tz);
-        console.log(`日付指定タスク "${p.title}": ${Utilities.formatDate(p.dayAnchor, tz, 'yyyy-MM-dd')} に配置`);
+        // 指定された日の開始時刻に強制設定（既存のcursorDateより前でも）
+        const targetDayStart = dateAt_(p.dayAnchor, SETTINGS.WORK_START, tz);
+        const targetDayEnd = dateAt_(p.dayAnchor, SETTINGS.WORK_END, tz);
+        
+        // 日付が指定されている場合は、その日の開始時刻にリセット
+        cursorDate = targetDayStart;
+        dayEnd = targetDayEnd;
+        
+        console.log(`日付指定タスク "${p.title}": ${Utilities.formatDate(p.dayAnchor, tz, 'yyyy-MM-dd')} の ${SETTINGS.WORK_START} から配置開始`);
       }
       
       try {
-        ({start, end, cursorDate, dayEnd} = findNextAvailableSlot_(
-          cursorDate, dayEnd, p.minutes, tz, existingEvents
-        ));
+        const result = findNextAvailableSlot_(cursorDate, dayEnd, p.minutes, tz, existingEvents);
+        start = result.start;
+        end = result.end;
+        cursorDate = result.cursorDate;
+        dayEnd = result.dayEnd;
+        
+        console.log(`タスク配置: "${p.title}" → ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')} - ${Utilities.formatDate(end, tz, 'HH:mm')}`);
       } catch (error) {
         console.log(`タスク "${p.title}" (${p.minutes}分) のスケジュール失敗: ${error.message}`);
         // エラーの場合は強制的に時間を割り当て（既存予定と重複してもOK）
