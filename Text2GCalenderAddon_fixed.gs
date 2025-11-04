@@ -1,6 +1,6 @@
 /* =====================================================================
  * Text2GCalendar - Google Calendar Automation System
- * Version: 2.4
+ * Version: 2.4.1
  * =====================================================================
  * 📅 主要機能:
  *   - テキストから自動でカレンダーイベント作成
@@ -453,34 +453,38 @@ function formatExistingEvents_(startDate, endDate) {
     // A/B/C を ★★★/★★/★ に変換（詳細デバッグ付き）
     console.log(`  🔍 変換判定開始...`);
     
-    // より柔軟なA/B/C検出パターン（✓マーク対応）
-    // 正規表現で「半角/全角スペース + A/B/C + その後に何か（スペース、✓、数字、末尾など）」を検出
-    const hasA = /[\s　]A(?:[\s　✓\d]|$)/.test(originalTitle);
-    const hasB = /[\s　]B(?:[\s　✓\d]|$)/.test(originalTitle);
-    const hasC = /[\s　]C(?:[\s　✓\d]|$)/.test(originalTitle);
+    // より柔軟なA/B/C検出パターン（✓マーク、数字対応）
+    // 正規表現で「スペース/タブ + A/B/C + (スペース/✓/数字/末尾)」を検出
+    // \s: 半角スペース、タブ、改行など
+    // 　: 全角スペース
+    const hasA = /[\s　]+A(?:[\s　✓\d]|$)/.test(originalTitle);
+    const hasB = /[\s　]+B(?:[\s　✓\d]|$)/.test(originalTitle);
+    const hasC = /[\s　]+C(?:[\s　✓\d]|$)/.test(originalTitle);
     
     console.log(`  📝 柔軟検出結果: A:${hasA}, B:${hasB}, C:${hasC}`);
     
     if (hasA) {
       // 複数の A パターンに対応（✓マークや数字も考慮）
-      newTitle = originalTitle.replace(/[\s　]A(?=[\s　✓\d]|$)/g, function(match) {
-        return match.charAt(0) + '★★★';
-      });
+      // スペース1個以上 + A を検出し、最初のスペース1個 + ★★★ に置き換え
+      newTitle = originalTitle.replace(/[\s　]+A(?=[\s　✓\d]|$)/g, ' ★★★');
       changed = true;
       console.log(`  ✅ A→★★★変換: "${originalTitle}" → "${newTitle}"`);
     } else if (hasB) {
-      newTitle = originalTitle.replace(/[\s　]B(?=[\s　✓\d]|$)/g, function(match) {
-        return match.charAt(0) + '★★';
-      });
+      newTitle = originalTitle.replace(/[\s　]+B(?=[\s　✓\d]|$)/g, ' ★★');
       changed = true;
       console.log(`  ✅ B→★★変換: "${originalTitle}" → "${newTitle}"`);
     } else if (hasC) {
-      newTitle = originalTitle.replace(/[\s　]C(?=[\s　✓\d]|$)/g, function(match) {
-        return match.charAt(0) + '★';
-      });
+      newTitle = originalTitle.replace(/[\s　]+C(?=[\s　✓\d]|$)/g, ' ★');
       changed = true;
       console.log(`  ✅ C→★変換: "${originalTitle}" → "${newTitle}"`);
     } else {
+      // 既に★がある場合は自動判定をスキップ
+      if (originalTitle.includes('★')) {
+        console.log(`  ✅ スキップ: 既に★が付与済み`);
+        skipped++;
+        return;
+      }
+      
       // 優先度が明示されていない場合は自動判定
       console.log(`  🤖 自動優先度判定開始...`);
       const inferredPriority = inferTaskPriority_(originalTitle);

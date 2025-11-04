@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.1] - 2025-11-05
+
+### Fixed
+- **★重複追加の防止**: 自動判定で既に★があるイベントに重複して★が追加される問題を修正
+  - `"資料準備 ★★"` → `"資料準備 ★★ ★★"` になってしまう不具合を解消
+  - 自動判定前に★の存在をチェックするロジックを追加
+- **A/B/C検出の改善**: スペースの数に関係なく検出できるように改善
+  - `/[\s　]A/` → `/[\s　]+A/` に変更（スペース1個以上に対応）
+- **置換ロジックの簡素化**: 常に「スペース1個 + ★」に統一
+  - `"タスク  A"` (スペース2個) → `"タスク ★★★"` に正規化
+
+### Technical Details
+- Detection Pattern: `/[\s　]+A(?:[\s　✓\d]|$)/` でスペース複数対応
+- Replacement: `/[\s　]+A(?=[\s　✓\d]|$)/g` → ` ★★★` で統一
+- Auto Priority Skip: `if (originalTitle.includes('★'))` で重複防止
+
 ## [2.4.0] - 2025-11-05
 
 ### Fixed
