@@ -1,6 +1,6 @@
 /* =====================================================================
  * Text2GCalendar - Google Calendar Automation System
- * Version: 2.4.1
+ * Version: 2.4.2
  * =====================================================================
  * 📅 主要機能:
  *   - テキストから自動でカレンダーイベント作成
@@ -510,10 +510,10 @@ function formatExistingEvents_(startDate, endDate) {
     // 変更があった場合のみ更新
     if (changed) {
       try {
-        // 権限テスト
+        // 権限テスト（Session.getActiveUser()を使わない安全な方法）
         console.log(`  🔄 更新試行: "${originalTitle}" → "${newTitle}"`);
         console.log(`     📋 イベントオーナー: ${event.isOwnedByMe() ? '自分' : '他人'}`);
-        console.log(`     ✏️ 編集可能: ${event.getGuestByEmail(Session.getActiveUser().getEmail())?.canModifyEvent() || event.isOwnedByMe() ? 'Yes' : 'No'}`);
+        console.log(`     ✏️ 編集可能: ${event.isOwnedByMe() ? 'Yes' : 'No'}`);
         
         event.setTitle(newTitle);
         converted++;
@@ -1735,7 +1735,6 @@ function doPost(e) {
           calendarId: calendar.getId(),
           calendarName: calendar.getName(),
           calendarOwner: calendar.isOwnedByMe(),
-          currentUser: Session.getActiveUser().getEmail(),
           totalEvents: events.length
         };
         

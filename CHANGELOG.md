@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.2] - 2025-11-05
+
+### Fixed
+- **トリガー実行時の権限エラー修正**: `Session.getActiveUser()` が原因の権限不足エラーを解消
+  - トリガー実行時に "Specified permissions are not sufficient" エラーが発生していた問題を修正
+  - `Session.getActiveUser().getEmail()` の呼び出しを削除
+  - より安全な `event.isOwnedByMe()` のみを使用
+
+### Technical Details
+- Removed: `Session.getActiveUser()` calls (line 516, 1738)
+- Permission Check: `event.isOwnedByMe()` only
+- Trigger Compatibility: 自動トリガー実行でも正常動作
+
 ## [2.4.1] - 2025-11-05
 
 ### Fixed
