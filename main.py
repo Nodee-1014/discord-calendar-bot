@@ -1,5 +1,5 @@
 # main.py
-# Discord Calendar Bot v2.4.3
+# Discord Calendar Bot v2.4.4
 # 1行のテキストでGoogleカレンダーにタスクを追加、進捗管理も自動化
 # https://github.com/Nodee-1014/discord-calendar-bot
 
@@ -13,7 +13,7 @@ from urllib.parse import quote_plus
 from datetime import datetime, time
 import asyncio
 
-__version__ = "2.4.3"
+__version__ = "2.4.4"
 
 # ---------- 設定（環境変数から読む） ----------
 load_dotenv()  # 追加：.env を読み込む
@@ -399,18 +399,14 @@ async def progress(interaction: discord.Interaction):
             # 完了タスク
             if completed_tasks:
                 lines.append(f"\n**✅ 完了タスク ({len(completed_tasks)}個):**")
-                for task in completed_tasks[:5]:  # 最大5個表示
+                for task in completed_tasks:  # 全タスク表示
                     lines.append(f"• {task['title']} `{task['start']}-{task['end']}`")
-                if len(completed_tasks) > 5:
-                    lines.append(f"... 他{len(completed_tasks) - 5}個")
             
             # 未完了タスク
             if pending_tasks:
                 lines.append(f"\n**⏳ 未完了タスク ({len(pending_tasks)}個):**")
-                for task in pending_tasks[:5]:  # 最大5個表示
+                for task in pending_tasks:  # 全タスク表示
                     lines.append(f"• {task['title']} `{task['start']}-{task['end']}`")
-                if len(pending_tasks) > 5:
-                    lines.append(f"... 他{len(pending_tasks) - 5}個")
         
         result = "\n".join(lines)
         

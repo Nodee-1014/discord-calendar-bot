@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.4] - 2025-11-05
+
+### Changed
+- **進捗レポートの5個制限を解除**: `/progress`コマンドで全タスクを表示
+  - 以前は完了/未完了タスクを各5個まで表示していた制限を解除
+  - すべてのタスクが確認できるように改善
+  - "... 他○個" 表示を削除
+
+### Technical Details
+- Display Limit: Removed `[:5]` slice
+- User Experience: Complete task visibility
+
 ## [2.4.3] - 2025-11-05
 
 ### Changed
