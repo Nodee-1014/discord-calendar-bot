@@ -1,4 +1,4 @@
-🎯 Discord Bot v2.3 - 修正完了レポート
+🎯 Discord Bot v2.3-2.4 - 修正完了レポート
 ================================================
 
 ## 📅 修正日: 2025年11月4日
@@ -113,6 +113,37 @@ newTitle = originalTitle.replace(/[\s　]A(?=[\s　✓]|$)/g, function(match) {
 ✅ `"ヤマト集荷 A ✓"` → `"ヤマト集荷 ★★★ ✓"`
 ✅ `"掃除　A　✓"` → `"掃除　★★★　✓"`
 ✅ 完了済みタスクも正しく変換
+
+## 🆕 v2.4 追加修正: 数字パターン対応と★スキップ条件削除
+
+### 問題点
+- `"Tissue construct C2T60 A 2h"` のような数字が続くパターンが変換されない
+- 1つでも★を含むイベントがあると全てスキップされてしまう
+
+### 修正内容
+
+**1. 正規表現に数字対応を追加:**
+```javascript
+// 修正前
+const hasA = /[\s　]A(?:[\s　✓]|$)/.test(originalTitle);
+
+// 修正後（\d追加）
+const hasA = /[\s　]A(?:[\s　✓\d]|$)/.test(originalTitle);
+```
+
+**2. 不適切な★スキップ条件を削除:**
+```javascript
+// 削除した部分
+if (originalTitle.includes('★')) {
+  skipped++;
+  return;
+}
+```
+
+### 効果
+✅ `"A 2h"` → `"★★★ 2h"`
+✅ `"Tissue construct C2T60 A 2h"` → `"Tissue construct C2T60 ★★★ 2h"`
+✅ 既に★があるイベントがあっても他のイベントを正しく変換
 
 ## 📚 学んだこと
 

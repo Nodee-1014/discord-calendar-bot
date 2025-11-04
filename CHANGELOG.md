@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2025-11-05
+
+### Fixed
+- **A/B/C変換の完全対応**: 数字が続くパターン（`"A 2h"`, `"B 30m"` など）にも対応
+  - 正規表現に `\d` を追加: `/[\s　]A(?:[\s　✓\d]|$)/`
+  - `"Tissue construct C2T60 A 2h"` → `"Tissue construct C2T60 ★★★ 2h"` が正常に動作
+- **既存イベントフォーマットの改善**: ★を含むイベントがあっても他のイベントを正しく変換
+  - 不適切な「★スキップ条件」を削除
+  - 各イベントを個別に判定するように修正
+
+### Technical Details
+- Detection Pattern: `/[\s　]A(?:[\s　✓\d]|$)/` で数字・✓マーク・スペース・末尾に対応
+- Replacement Pattern: `/[\s　]A(?=[\s　✓\d]|$)/g` で正確な位置指定変換
+- Skip Condition: 全体の★チェックを削除し、個別イベントごとにA/B/C判定
+
 ## [2.3.0] - 2025-11-04
 
 ### Fixed

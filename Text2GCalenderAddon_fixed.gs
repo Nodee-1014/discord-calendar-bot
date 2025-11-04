@@ -1,5 +1,6 @@
 /* =====================================================================
  * Text2GCalendar - Google Calendar Automation System
+ * Version: 2.4
  * =====================================================================
  * 📅 主要機能:
  *   - テキストから自動でカレンダーイベント作成
@@ -449,39 +450,32 @@ function formatExistingEvents_(startDate, endDate) {
     let newTitle = originalTitle;
     let changed = false;
     
-    // 既に★が付いている場合はスキップ
-    if (originalTitle.includes('★')) {
-      console.log(`  ❌ スキップ理由: 既にフォーマット済み`);
-      skipped++;
-      return;
-    }
-    
     // A/B/C を ★★★/★★/★ に変換（詳細デバッグ付き）
     console.log(`  🔍 変換判定開始...`);
     
     // より柔軟なA/B/C検出パターン（✓マーク対応）
-    // 正規表現で「半角/全角スペース + A/B/C + その後に何か（スペース、✓、末尾など）」を検出
-    const hasA = /[\s　]A(?:[\s　✓]|$)/.test(originalTitle);
-    const hasB = /[\s　]B(?:[\s　✓]|$)/.test(originalTitle);
-    const hasC = /[\s　]C(?:[\s　✓]|$)/.test(originalTitle);
+    // 正規表現で「半角/全角スペース + A/B/C + その後に何か（スペース、✓、数字、末尾など）」を検出
+    const hasA = /[\s　]A(?:[\s　✓\d]|$)/.test(originalTitle);
+    const hasB = /[\s　]B(?:[\s　✓\d]|$)/.test(originalTitle);
+    const hasC = /[\s　]C(?:[\s　✓\d]|$)/.test(originalTitle);
     
     console.log(`  📝 柔軟検出結果: A:${hasA}, B:${hasB}, C:${hasC}`);
     
     if (hasA) {
-      // 複数の A パターンに対応（✓マークも考慮）
-      newTitle = originalTitle.replace(/[\s　]A(?=[\s　✓]|$)/g, function(match) {
+      // 複数の A パターンに対応（✓マークや数字も考慮）
+      newTitle = originalTitle.replace(/[\s　]A(?=[\s　✓\d]|$)/g, function(match) {
         return match.charAt(0) + '★★★';
       });
       changed = true;
       console.log(`  ✅ A→★★★変換: "${originalTitle}" → "${newTitle}"`);
     } else if (hasB) {
-      newTitle = originalTitle.replace(/[\s　]B(?=[\s　✓]|$)/g, function(match) {
+      newTitle = originalTitle.replace(/[\s　]B(?=[\s　✓\d]|$)/g, function(match) {
         return match.charAt(0) + '★★';
       });
       changed = true;
       console.log(`  ✅ B→★★変換: "${originalTitle}" → "${newTitle}"`);
     } else if (hasC) {
-      newTitle = originalTitle.replace(/[\s　]C(?=[\s　✓]|$)/g, function(match) {
+      newTitle = originalTitle.replace(/[\s　]C(?=[\s　✓\d]|$)/g, function(match) {
         return match.charAt(0) + '★';
       });
       changed = true;
