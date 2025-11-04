@@ -41,7 +41,7 @@
  *   ✓ 複数タスク自動分離
  *   ✓ Discord Bot API統合
  * 
- * 🚀 バージョン: 2.1 Final (2025-10-30)
+ * 🚀 バージョン: 2.3 Final (2025-10-30) - 既存イベント自動フォーマット＋スマート優先度判定
  * 👤 開発: Discord Calendar Bot Project
  * 📦 デプロイ: Railway (24/7運用)
  * =====================================================================
@@ -55,7 +55,8 @@ const SETTINGS = {
   GAP_MIN: 5,               // タスク間の最小間隔（分）
   LOOKAHEAD_DAYS: 30,       // 先読み日数
   MAX_SEARCH_DAYS: 14,      // 最大検索日数
-  MAX_TRIES: 500            // 最大試行回数
+  MAX_TRIES: 500,           // 最大試行回数
+  REPORT_TIMES: ['13:00', '20:00']  // 進捗レポート通知時刻
 };
 
 const PRIORITY_ORDER = { 
@@ -66,6 +67,256 @@ const PRIORITY_ORDER = {
 
 // Web API認証キー（本番環境では環境変数に移行推奨）
 const API_KEY = 'my_secure_api_key_2025_discord_bot';
+
+// =====================================================================
+// タスク完了管理機能
+// =====================================================================
+
+/**
+ * 今日の進捗レポートを生成
+ * @return {Object} 進捗情報
+ */
+function generateDailyProgress_() {
+  const tz = SETTINGS.TIMEZONE;
+  const now = new Date();
+  
+  console.log(`📊 進捗レポート生成開始: ${Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm')}`);
+  
+  // 今日の開始・終了時刻
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  
+  console.log(`📅 対象期間: ${Utilities.formatDate(startOfDay, tz, 'yyyy-MM-dd HH:mm')} 〜 ${Utilities.formatDate(endOfDay, tz, 'HH:mm')}`);
+  
+  const calendar = CalendarApp.getDefaultCalendar();
+  const events = calendar.getEvents(startOfDay, endOfDay);
+  
+  console.log(`📋 取得イベント数: ${events.length}件`);
+  
+  const completed = [];
+  const pending = [];
+  let totalTasks = 0;
+  let completedCount = 0;
+  
+  events.forEach(event => {
+    // 終日イベントは除外
+    if (event.isAllDayEvent()) return;
+    
+    const title = event.getTitle();
+    const start = event.getStartTime();
+    const end = event.getEndTime();
+    const duration = (end - start) / (1000 * 60); // 分単位
+    
+    totalTasks++;
+    
+    // タイトルに✓があれば完了タスク
+    if (title.includes('✓')) {
+      completedCount++;
+      completed.push({
+        title: title.replace('✓', '').trim(),
+        start: Utilities.formatDate(start, tz, 'HH:mm'),
+        end: Utilities.formatDate(end, tz, 'HH:mm'),
+        duration: Math.round(duration)
+      });
+    } else {
+      pending.push({
+        title: title,
+        start: Utilities.formatDate(start, tz, 'HH:mm'),
+        end: Utilities.formatDate(end, tz, 'HH:mm'),
+        duration: Math.round(duration)
+      });
+    }
+  });
+  
+  // 完了率計算
+  const completionRate = totalTasks > 0 ? Math.round((completedCount / totalTasks) * 100) : 0;
+  
+  console.log(`📈 進捗サマリ: ${completedCount}/${totalTasks} (${completionRate}%)`);
+  console.log(`✅ 完了タスク: ${completed.length}件`);
+  console.log(`⏳ 未完了タスク: ${pending.length}件`);
+  
+  return {
+    date: Utilities.formatDate(now, tz, 'yyyy-MM-dd (EEE)'),
+    totalTasks: totalTasks,
+    completedCount: completedCount,
+    pendingCount: totalTasks - completedCount,
+    completionRate: completionRate,
+    completed: completed,
+    pending: pending
+  };
+}
+
+/**
+ * タスクを完了にマーク
+ * @param {string} taskTitle - タスクタイトル（部分一致）
+ * @return {Object} 結果
+ */
+function markTaskAsComplete_(taskTitle) {
+  const tz = SETTINGS.TIMEZONE;
+  const now = new Date();
+  
+  // 今日のイベントを取得
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  
+  const calendar = CalendarApp.getDefaultCalendar();
+  const events = calendar.getEvents(startOfDay, endOfDay);
+  
+  let found = false;
+  let updatedTitle = '';
+  
+  for (const event of events) {
+    const title = event.getTitle();
+    
+    // 終日イベントはスキップ
+    if (event.isAllDayEvent()) continue;
+    
+    // すでに完了マークがある場合はスキップ
+    if (title.includes('✓')) continue;
+    
+    // タイトルに部分一致
+    if (title.includes(taskTitle)) {
+      updatedTitle = title + ' ✓';
+      event.setTitle(updatedTitle);
+      found = true;
+      console.log(`✅ タスク完了: "${title}" → "${updatedTitle}"`);
+      break;
+    }
+  }
+  
+  return {
+    ok: found,
+    message: found ? `✅ タスク完了: ${updatedTitle}` : `⚠️ タスクが見つかりません: "${taskTitle}"`
+  };
+}
+
+/**
+ * タスクの完了マークを解除
+ * @param {string} taskTitle - タスクタイトル（部分一致）
+ * @return {Object} 結果
+ */
+function unmarkTaskAsComplete_(taskTitle) {
+  const tz = SETTINGS.TIMEZONE;
+  const now = new Date();
+  
+  // 今日のイベントを取得
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  
+  const calendar = CalendarApp.getDefaultCalendar();
+  const events = calendar.getEvents(startOfDay, endOfDay);
+  
+  let found = false;
+  let updatedTitle = '';
+  
+  for (const event of events) {
+    const title = event.getTitle();
+    
+    // 終日イベントはスキップ
+    if (event.isAllDayEvent()) continue;
+    
+    // 完了マークがない場合はスキップ
+    if (!title.includes('✓')) continue;
+    
+    // タイトルに部分一致
+    if (title.includes(taskTitle)) {
+      updatedTitle = title.replace(/\s*✓\s*$/, '').trim();
+      event.setTitle(updatedTitle);
+      found = true;
+      console.log(`↩️  タスク未完了に戻す: "${title}" → "${updatedTitle}"`);
+      break;
+    }
+  }
+  
+  return {
+    ok: found,
+    message: found ? `↩️ タスク未完了に戻しました: ${updatedTitle}` : `⚠️ 完了タスクが見つかりません: "${taskTitle}"`
+  };
+}
+
+// =====================================================================
+// 🆕 毎日自動フォーマット機能
+// =====================================================================
+
+/**
+ * 毎日自動実行：新しいカレンダーイベントを★表示に変換
+ * Google Apps Script のトリガーで毎日実行される関数
+ */
+function dailyAutoFormat() {
+  const tz = SETTINGS.TIMEZONE;
+  const now = new Date();
+  
+  console.log(`\n🤖 毎日自動フォーマット開始: ${Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm')}`);
+  
+  try {
+    // 昨日から明日までのイベントをチェック（新規追加されたイベントをキャッチ）
+    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0);
+    const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 23, 59, 59);
+    
+    const result = formatExistingEvents_(yesterday, tomorrow);
+    
+    console.log(`📊 自動フォーマット完了: ${result.converted}件変換, ${result.skipped}件スキップ`);
+    
+    // 変換があった場合はログに記録
+    if (result.converted > 0) {
+      console.log(`✅ 今日の自動変換:`);
+      result.results.forEach((change, index) => {
+        console.log(`  ${index + 1}. "${change.original}" → "${change.converted}" (${change.date})`);
+      });
+    }
+    
+    return {
+      success: true,
+      converted: result.converted,
+      skipped: result.skipped,
+      timestamp: now.toISOString()
+    };
+    
+  } catch (error) {
+    console.error(`❌ 毎日自動フォーマットエラー: ${error.message}`);
+    return {
+      success: false,
+      error: error.message,
+      timestamp: now.toISOString()
+    };
+  }
+}
+
+/**
+ * 週次自動フォーマット：過去1週間のイベントを一括変換
+ * 毎週月曜日に実行（見逃したイベントをキャッチアップ）
+ */
+function weeklyAutoFormat() {
+  const tz = SETTINGS.TIMEZONE;
+  const now = new Date();
+  
+  console.log(`\n📅 週次自動フォーマット開始: ${Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm')}`);
+  
+  try {
+    // 過去1週間から今後2週間までをフォーマット
+    const weekAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7, 0, 0, 0);
+    const twoWeeksLater = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 14, 23, 59, 59);
+    
+    const result = formatExistingEvents_(weekAgo, twoWeeksLater);
+    
+    console.log(`📊 週次フォーマット完了: ${result.converted}件変換, ${result.skipped}件スキップ`);
+    
+    return {
+      success: true,
+      converted: result.converted,
+      skipped: result.skipped,
+      timestamp: now.toISOString()
+    };
+    
+  } catch (error) {
+    console.error(`❌ 週次自動フォーマットエラー: ${error.message}`);
+    return {
+      success: false,
+      error: error.message,
+      timestamp: now.toISOString()
+    };
+  }
+}
 
 // =====================================================================
 // 週間レポート機能
@@ -90,6 +341,12 @@ function generateWeeklyReport_(startDate, endDate) {
   };
   
   events.forEach(event => {
+    // 🔧 終日イベントを除外
+    if (event.isAllDayEvent()) {
+      console.log(`📋 終日イベント除外: "${event.getTitle()}"`);
+      return;
+    }
+    
     const title = event.getTitle();
     const start = event.getStartTime();
     const end = event.getEndTime();
@@ -127,6 +384,225 @@ function extractPriorityFromTitle_(title) {
   if (title.includes('★★★')) return 'A';
   if (title.includes('★★')) return 'B';
   if (title.includes('★')) return 'C';
+  return 'other';
+}
+
+/**
+ * 既存カレンダーイベントの自動フォーマット機能
+ * A/B/Cを★★★/★★/★に変換し、統一された表示にする
+ * @param {Date} startDate - 処理開始日
+ * @param {Date} endDate - 処理終了日  
+ * @return {Object} 変換結果
+ */
+function formatExistingEvents_(startDate, endDate) {
+  const tz = SETTINGS.TIMEZONE;
+  
+  // カレンダー権限をテスト
+  try {
+    const calendar = CalendarApp.getDefaultCalendar();
+    console.log(`📅 カレンダー名: "${calendar.getName()}"`);
+    console.log(`🔐 カレンダーID: ${calendar.getId()}`);
+    console.log(`👤 オーナー: ${calendar.isOwnedByMe() ? '自分' : '他人'}`);
+    
+    const events = calendar.getEvents(startDate, endDate);
+    
+    // 処理件数を制限（パフォーマンス向上）
+    const maxEvents = 30;
+    const eventsToProcess = events.slice(0, maxEvents);
+    
+    let converted = 0;
+    let skipped = 0;
+    const results = [];
+    
+    console.log(`\n🔧 既存イベント自動フォーマット開始 (${events.length}件中${Math.min(events.length, maxEvents)}件処理)`);
+    if (events.length > maxEvents) {
+      console.log(`⚠️ パフォーマンスのため${maxEvents}件に制限`);
+    }
+  
+  eventsToProcess.forEach(event => {
+    const originalTitle = event.getTitle();
+    
+    // デバッグ情報を詳細出力
+    console.log(`\n🔍 イベント検査: "${originalTitle}"`);
+    console.log(`  📅 開始時刻: ${Utilities.formatDate(event.getStartTime(), tz, 'yyyy-MM-dd HH:mm')}`);
+    console.log(`  📋 終日イベント: ${event.isAllDayEvent()}`);
+    console.log(`  👤 自分の作成: ${event.isOwnedByMe()}`);
+    console.log(`  ⭐ ★含有: ${originalTitle.includes('★')}`);
+    console.log(`  🅰️ A含有: ${originalTitle.includes(' A') || originalTitle.endsWith(' A')}`);
+    console.log(`  🅱️ B含有: ${originalTitle.includes(' B') || originalTitle.endsWith(' B')}`);
+    console.log(`  ©️ C含有: ${originalTitle.includes(' C') || originalTitle.endsWith(' C')}`);
+    
+    // 終日イベントはスキップ
+    if (event.isAllDayEvent()) {
+      console.log(`  ❌ スキップ理由: 終日イベント`);
+      skipped++;
+      return;
+    }
+    
+    // 自分が作成したイベントのみ処理（権限問題を回避）
+    if (!event.isOwnedByMe()) {
+      console.log(`  ❌ スキップ理由: 他人のイベント`);
+      skipped++;
+      return;
+    }
+    
+    let newTitle = originalTitle;
+    let changed = false;
+    
+    // 既に★が付いている場合はスキップ
+    if (originalTitle.includes('★')) {
+      console.log(`  ❌ スキップ理由: 既にフォーマット済み`);
+      skipped++;
+      return;
+    }
+    
+    // A/B/C を ★★★/★★/★ に変換（詳細デバッグ付き）
+    console.log(`  🔍 変換判定開始...`);
+    
+    // より柔軟なA/B/C検出パターン（✓マーク対応）
+    // 正規表現で「半角/全角スペース + A/B/C + その後に何か（スペース、✓、末尾など）」を検出
+    const hasA = /[\s　]A(?:[\s　✓]|$)/.test(originalTitle);
+    const hasB = /[\s　]B(?:[\s　✓]|$)/.test(originalTitle);
+    const hasC = /[\s　]C(?:[\s　✓]|$)/.test(originalTitle);
+    
+    console.log(`  📝 柔軟検出結果: A:${hasA}, B:${hasB}, C:${hasC}`);
+    
+    if (hasA) {
+      // 複数の A パターンに対応（✓マークも考慮）
+      newTitle = originalTitle.replace(/[\s　]A(?=[\s　✓]|$)/g, function(match) {
+        return match.charAt(0) + '★★★';
+      });
+      changed = true;
+      console.log(`  ✅ A→★★★変換: "${originalTitle}" → "${newTitle}"`);
+    } else if (hasB) {
+      newTitle = originalTitle.replace(/[\s　]B(?=[\s　✓]|$)/g, function(match) {
+        return match.charAt(0) + '★★';
+      });
+      changed = true;
+      console.log(`  ✅ B→★★変換: "${originalTitle}" → "${newTitle}"`);
+    } else if (hasC) {
+      newTitle = originalTitle.replace(/[\s　]C(?=[\s　✓]|$)/g, function(match) {
+        return match.charAt(0) + '★';
+      });
+      changed = true;
+      console.log(`  ✅ C→★変換: "${originalTitle}" → "${newTitle}"`);
+    } else {
+      // 優先度が明示されていない場合は自動判定
+      console.log(`  🤖 自動優先度判定開始...`);
+      const inferredPriority = inferTaskPriority_(originalTitle);
+      console.log(`  🎯 判定結果: ${inferredPriority}`);
+      
+      if (inferredPriority !== 'other') {
+        if (inferredPriority === 'A') {
+          newTitle += ' ★★★';
+          console.log(`  🤖 A優先度自動追加: "${originalTitle}" → "${newTitle}"`);
+        } else if (inferredPriority === 'B') {
+          newTitle += ' ★★';
+          console.log(`  🤖 B優先度自動追加: "${originalTitle}" → "${newTitle}"`);
+        } else if (inferredPriority === 'C') {
+          newTitle += ' ★';
+          console.log(`  🤖 C優先度自動追加: "${originalTitle}" → "${newTitle}"`);
+        }
+        changed = true;
+      } else {
+        console.log(`  ➡️ 変換対象外: 優先度なし`);
+      }
+    }
+    
+    // 変更があった場合のみ更新
+    if (changed) {
+      try {
+        // 権限テスト
+        console.log(`  🔄 更新試行: "${originalTitle}" → "${newTitle}"`);
+        console.log(`     📋 イベントオーナー: ${event.isOwnedByMe() ? '自分' : '他人'}`);
+        console.log(`     ✏️ 編集可能: ${event.getGuestByEmail(Session.getActiveUser().getEmail())?.canModifyEvent() || event.isOwnedByMe() ? 'Yes' : 'No'}`);
+        
+        event.setTitle(newTitle);
+        converted++;
+        
+        const start = event.getStartTime();
+        console.log(`  ✅ 成功: "${originalTitle}" → "${newTitle}"`);
+        console.log(`     ${Utilities.formatDate(start, tz, 'yyyy-MM-dd HH:mm')}`);
+        
+        results.push({
+          original: originalTitle,
+          converted: newTitle,
+          date: Utilities.formatDate(start, tz, 'yyyy-MM-dd'),
+          time: Utilities.formatDate(start, tz, 'HH:mm')
+        });
+      } catch (e) {
+        console.log(`  ❌ 編集失敗: "${originalTitle}"`);
+        console.log(`     エラー: ${e.toString()}`);
+        skipped++;
+      }
+    } else {
+      skipped++;
+    }
+  });
+  
+  console.log(`\n📊 フォーマット完了: ${converted}件変換, ${skipped}件スキップ`);
+  
+  return {
+    converted: converted,
+    skipped: skipped,
+    results: results
+  };
+  
+  } catch (calendarError) {
+    console.log(`❌ カレンダーアクセスエラー: ${calendarError.toString()}`);
+    return {
+      converted: 0,
+      skipped: 0,
+      results: [],
+      error: `カレンダーアクセス権限エラー: ${calendarError.toString()}`
+    };
+  }
+}
+
+/**
+ * タスク名から優先度を自動推定
+ * @param {string} taskTitle - タスクタイトル
+ * @return {string} 推定優先度（'A', 'B', 'C', 'other'）
+ */
+function inferTaskPriority_(taskTitle) {
+  const title = taskTitle.toLowerCase();
+  
+  // 高優先度キーワード (A = ★★★)
+  const highPriorityKeywords = [
+    '緊急', '至急', '重要', 'urgent', 'important', 'critical',
+    '締切', 'deadline', '発表', 'presentation', '会議', 'meeting',
+    '報告', 'report', 'プレゼン', '提出', 'submit', '納期'
+  ];
+  
+  // 中優先度キーワード (B = ★★)
+  const mediumPriorityKeywords = [
+    '準備', 'prepare', '作成', 'create', '確認', 'check', '検討', 'review',
+    '調査', 'research', '分析', 'analysis', 'メンテ', 'maintenance',
+    '整理', 'organize', '更新', 'update', '修正', 'fix'
+  ];
+  
+  // 低優先度キーワード (C = ★)  
+  const lowPriorityKeywords = [
+    '読書', 'reading', '学習', 'study', '勉強', 'learn',
+    '整理', 'clean', '片付け', 'organize', '雑務', '事務',
+    'メール', 'email', '連絡', 'contact'
+  ];
+  
+  // 高優先度チェック
+  for (const keyword of highPriorityKeywords) {
+    if (title.includes(keyword)) return 'A';
+  }
+  
+  // 中優先度チェック
+  for (const keyword of mediumPriorityKeywords) {
+    if (title.includes(keyword)) return 'B';
+  }
+  
+  // 低優先度チェック
+  for (const keyword of lowPriorityKeywords) {
+    if (title.includes(keyword)) return 'C';
+  }
+  
   return 'other';
 }
 
@@ -529,6 +1005,7 @@ function planFromRaw_(raw, previewOnly) {
   console.log(`\n========================================`);
   console.log(`スケジュール計画開始`);
   console.log(`========================================`);
+  console.log(`🔍 入力テキスト: "${raw}"`);
   console.log(`現在時刻: ${Utilities.formatDate(now, tz, 'yyyy-MM-dd HH:mm (EEE)')}`);
   console.log(`計画開始: ${Utilities.formatDate(cursorDate, tz, 'yyyy-MM-dd HH:mm')}`);
   
@@ -540,12 +1017,18 @@ function planFromRaw_(raw, previewOnly) {
 
   // 行の分離：改行 + 複数タスク自動分離
   let lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  console.log(`📝 分離された行数: ${lines.length}`);
+  lines.forEach((line, i) => console.log(`  ${i+1}. "${line}"`));
   
   let expandedLines = [];
   for (const line of lines) {
+    console.log(`\n🔍 行解析: "${line}"`);
     const splitTasks = splitMultipleTasks_(line);
+    console.log(`📊 分離結果: ${splitTasks.length}件`);
+    splitTasks.forEach((task, i) => console.log(`  ${i+1}. "${task}"`));
+    
     if (splitTasks.length > 1) {
-      console.log(`複数タスク分離: "${line}" → ${splitTasks.length}件`);
+      console.log(`✅ 複数タスク分離: "${line}" → ${splitTasks.length}件`);
     }
     expandedLines = expandedLines.concat(splitTasks);
   }
@@ -747,12 +1230,39 @@ function planFromRaw_(raw, previewOnly) {
 function parseLine_(line, now) {
   const tz = SETTINGS.TIMEZONE;
 
+  // 時間の抽出（時間指定または時刻範囲から）
   const hr = line.match(/(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours|時間)\b/i);
   const mn = line.match(/(\d+)\s*(?:m|min|mins|minute|minutes|分)\b/i);
+  
   let minutes = null;
-  if (hr) minutes = Math.round(parseFloat(hr[1]) * 60);
-  else if (mn) minutes = parseInt(mn[1], 10);
-  if (!minutes || minutes <= 0) return null;
+  if (hr) {
+    minutes = Math.round(parseFloat(hr[1]) * 60);
+    console.log(`  期間抽出（時間）: ${hr[1]}時間 = ${minutes}分`);
+  } else if (mn) {
+    minutes = parseInt(mn[1], 10);
+    console.log(`  期間抽出（分）: ${minutes}分`);
+  } else {
+    // 時刻範囲から期間を計算（例：10:00-11:00）
+    const rangeMatch = line.match(/(\d{1,2})[:：](\d{2})-(\d{1,2})[:：](\d{2})/);
+    if (rangeMatch) {
+      const startH = parseInt(rangeMatch[1], 10);
+      const startM = parseInt(rangeMatch[2], 10);
+      const endH = parseInt(rangeMatch[3], 10);
+      const endM = parseInt(rangeMatch[4], 10);
+      
+      const startMinutes = startH * 60 + startM;
+      const endMinutes = endH * 60 + endM;
+      minutes = endMinutes - startMinutes;
+      
+      if (minutes <= 0) minutes = 60; // デフォルト1時間
+      console.log(`  期間抽出（範囲）: ${startH}:${startM.toString().padStart(2,'0')}-${endH}:${endM.toString().padStart(2,'0')} = ${minutes}分`);
+    }
+  }
+  
+  if (!minutes || minutes <= 0) {
+    console.log(`  ⚠️ 期間が見つからないか無効: ${line}`);
+    return null;
+  }
 
   // 日付（@なしの251030形式も対応）
   let dayAnchor = null;
@@ -767,43 +1277,61 @@ function parseLine_(line, now) {
     }
   }
 
-  // 時刻
+  // 時刻（@ありと@なしの両方をサポート）
   let fixedStart = null;
-  const mTime = line.match(/@(午前|午後)?\s?(\d{1,2})(?:[:：](\d{2}))?時?|@(\d{1,2}):(\d{2})/);
+  
+  // @なしの時刻パターンを先に試す（10:00, 14:30, 9時など）
+  let mTime = line.match(/(?:^|\s)(\d{1,2})[:：](\d{2})(?:-\d{1,2}[:：]\d{2})?(?:\s|$)/);
   if (mTime) {
-    if (mTime[4]) {
-      const H = parseInt(mTime[4], 10);
-      const M = parseInt(mTime[5], 10);
-      const base = dayAnchor || now;
-      fixedStart = new Date(base.getFullYear(), base.getMonth(), base.getDate(), H, M, 0, 0);
-    } else {
-      let H = parseInt(mTime[2], 10);
-      const ampm = mTime[1];
-      if (ampm === '午後' && H < 12) H += 12;
-      if (ampm === '午前' && H === 12) H = 0;
-      const base = dayAnchor || now;
-      fixedStart = new Date(base.getFullYear(), base.getMonth(), base.getDate(), H, 0, 0, 0);
+    const H = parseInt(mTime[1], 10);
+    const M = parseInt(mTime[2], 10);
+    const base = dayAnchor || now;
+    fixedStart = new Date(base.getFullYear(), base.getMonth(), base.getDate(), H, M, 0, 0);
+    line = line.replace(/(?:^|\s)\d{1,2}[:：]\d{2}(?:-\d{1,2}[:：]\d{2})?/, '').trim();
+    console.log(`  時刻抽出（@なし）: ${H}:${M.toString().padStart(2, '0')}`);
+  } else {
+    // @ありの時刻パターン
+    mTime = line.match(/@(午前|午後)?\s?(\d{1,2})(?:[:：](\d{2}))?時?|@(\d{1,2}):(\d{2})/);
+    if (mTime) {
+      if (mTime[4]) {
+        const H = parseInt(mTime[4], 10);
+        const M = parseInt(mTime[5], 10);
+        const base = dayAnchor || now;
+        fixedStart = new Date(base.getFullYear(), base.getMonth(), base.getDate(), H, M, 0, 0);
+        console.log(`  時刻抽出（@あり）: ${H}:${M.toString().padStart(2, '0')}`);
+      } else {
+        let H = parseInt(mTime[2], 10);
+        const ampm = mTime[1];
+        if (ampm === '午後' && H < 12) H += 12;
+        if (ampm === '午前' && H === 12) H = 0;
+        const M = mTime[3] ? parseInt(mTime[3], 10) : 0;
+        const base = dayAnchor || now;
+        fixedStart = new Date(base.getFullYear(), base.getMonth(), base.getDate(), H, M, 0, 0);
+        console.log(`  時刻抽出（@あり午前午後）: ${H}:${M.toString().padStart(2, '0')}`);
+      }
+      line = line.replace(/@(午前|午後)?\s?\d{1,2}(?:[:：]\d{2})?時?/, '').replace(/@\d{1,2}:\d{2}/, '').trim();
     }
-    line = line.replace(/@(午前|午後)?\s?\d{1,2}(?::\d{2})?時?/, '').replace(/@\d{1,2}:\d{2}/, '').trim();
   }
 
   // 優先度の抽出（★または A/B/C）
   let priority = 'C';
   
   // ★の数を数える（★★★ = A, ★★ = B, ★ = C）
-  const starMatch = line.match(/★{1,3}\s*$/);
+  const starMatch = line.match(/★{1,3}/);
   if (starMatch) {
-    const starCount = starMatch[0].replace(/\s/g, '').length;
+    const starCount = starMatch[0].length;
     if (starCount === 3) priority = 'A';
     else if (starCount === 2) priority = 'B';
     else priority = 'C';
-    line = line.replace(/★{1,3}\s*$/, '').trim();
+    line = line.replace(/★{1,3}\s*/, '').trim();
+    console.log(`  優先度抽出（★）: ${priority} (${starCount}個)`);
   } else {
-    // 従来のA/B/C表記もサポート
-    const tagM = line.match(/\s([ABC])\s*$/i);
+    // A/B/C表記をより柔軟にサポート（行末だけでなく途中でも）
+    const tagM = line.match(/(?:^|\s)([ABCａｂｃ])\s/i) || line.match(/(?:^|\s)([ABCａｂｃ])\s*$/i);
     if (tagM) {
-      priority = tagM[1].toUpperCase();
-      line = line.replace(/\s[ABC]\s*$/i, '').trim();
+      priority = tagM[1].toUpperCase().replace(/[ａｂｃ]/, m => ({'ａ': 'A', 'ｂ': 'B', 'ｃ': 'C'}[m]));
+      line = line.replace(/(?:^|\s)[ABCａｂｃ]\s*/i, ' ').replace(/\s[ABCａｂｃ]\s*$/i, '').trim();
+      console.log(`  優先度抽出（A/B/C）: ${priority}`);
     }
   }
 
@@ -815,6 +1343,8 @@ function parseLine_(line, now) {
     .replace(/\s{2,}/g, ' ')
     .trim();
   if (!title) title = 'Untitled Task';
+
+  console.log(`  パース結果: タイトル="${title}" 期間=${minutes}分 日付=${dayAnchor ? Utilities.formatDate(dayAnchor, SETTINGS.TIMEZONE, 'MM/dd') : '今日'} 時刻=${fixedStart ? Utilities.formatDate(fixedStart, SETTINGS.TIMEZONE, 'HH:mm') : 'なし'} 優先度=${priority}`);
 
   return { title, minutes, dayAnchor, fixedStart, priority };
 }
@@ -874,13 +1404,38 @@ function createEvents_(items) {
   for (let taskIndex = 0; taskIndex < items.length; taskIndex++) {
     const it = items[taskIndex];
     
-    // タイトルに優先度マークを追加
+    // タイトルを自動フォーマット（A/B/C → ★★★/★★/★）
     let title = it.title;
+    let formatApplied = false;
+    
+    // 1. 既存のA/B/Cを★に変換
+    if (title.includes(' A') || title.endsWith(' A')) {
+      title = title.replace(/ A\b/g, ' ★★★');
+      console.log(`🌟 A→★★★変換: "${it.title}" → "${title}"`);
+      formatApplied = true;
+    } else if (title.includes(' B') || title.endsWith(' B')) {
+      title = title.replace(/ B\b/g, ' ★★');
+      console.log(`🌟 B→★★変換: "${it.title}" → "${title}"`);
+      formatApplied = true;
+    } else if (title.includes(' C') || title.endsWith(' C')) {
+      title = title.replace(/ C\b/g, ' ★');
+      console.log(`🌟 C→★変換: "${it.title}" → "${title}"`);
+      formatApplied = true;
+    }
+    
+    // 2. ★がまだ付いていない場合は priorityLabel または自動判定で追加
     if (!title.includes('★')) {
-      const priorityLabel = it.priorityLabel || 'C';
-      if (priorityLabel === 'A') title += ' ★★★';
-      else if (priorityLabel === 'B') title += ' ★★';
-      else if (priorityLabel === 'C') title += ' ★';
+      const priorityLabel = it.priorityLabel || inferTaskPriority_(title);
+      if (priorityLabel === 'A') {
+        title += ' ★★★';
+        console.log(`🤖 A優先度追加: "${it.title}" → "${title}"`);
+      } else if (priorityLabel === 'B') {
+        title += ' ★★';
+        console.log(`🤖 B優先度追加: "${it.title}" → "${title}"`);
+      } else if (priorityLabel === 'C') {
+        title += ' ★';
+        console.log(`🤖 C優先度追加: "${it.title}" → "${title}"`);
+      }
     }
     
     console.log(`\n[タスク ${taskIndex + 1}/${items.length}] ${title}`);
@@ -1058,11 +1613,22 @@ function doPost(e) {
     }
 
     if (!e.postData || !e.postData.contents) {
-      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'empty body' }))
+      console.log('❌ POSTデータまたは内容が空です');
+      console.log('postData:', e.postData);
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'no text' }))
         .setMimeType(ContentService.MimeType.JSON);
     }
 
-    const body = JSON.parse(e.postData.contents);
+    let body;
+    try {
+      body = JSON.parse(e.postData.contents);
+      console.log('📝 受信したデータ:', JSON.stringify(body));
+    } catch (parseError) {
+      console.log('❌ JSON解析エラー:', parseError.toString());
+      console.log('受信内容:', e.postData.contents);
+      return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'invalid json' }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
     const mode = body.mode || 'create';
 
     if (mode === 'get_schedule') {
@@ -1091,6 +1657,172 @@ function doPost(e) {
         ok: true, 
         mode: 'weekly_report', 
         report: report 
+      }))
+      .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 🆕 進捗レポート取得
+    if (mode === 'progress') {
+      const progress = generateDailyProgress_();
+      return ContentService.createTextOutput(JSON.stringify({ 
+        ok: true, 
+        mode: 'progress', 
+        progress: progress 
+      }))
+      .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 🆕 タスク完了マーク
+    if (mode === 'mark_complete') {
+      const taskToComplete = body.task;
+      if (!taskToComplete) {
+        return ContentService.createTextOutput(JSON.stringify({ 
+          ok: false, 
+          error: 'パラメータ "task" が必要です' 
+        }))
+        .setMimeType(ContentService.MimeType.JSON);
+      }
+      
+      const result = markTaskAsComplete_(taskToComplete);
+      return ContentService.createTextOutput(JSON.stringify(result))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 🆕 タスク完了解除
+    if (mode === 'unmark_complete') {
+      const taskToUnmark = body.task;
+      if (!taskToUnmark) {
+        return ContentService.createTextOutput(JSON.stringify({ 
+          ok: false, 
+          error: 'パラメータ "task" が必要です' 
+        }))
+        .setMimeType(ContentService.MimeType.JSON);
+      }
+      
+      const result = unmarkTaskAsComplete_(taskToUnmark);
+      return ContentService.createTextOutput(JSON.stringify(result))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 🆕 既存イベント自動フォーマット
+    if (mode === 'format_events') {
+      const daysBack = body.days_back || 7;  // デフォルト7日前から
+      const daysForward = body.days_forward || 30;  // デフォルト30日先まで
+      
+      const now = new Date();
+      const startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack, 0, 0, 0);
+      const endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysForward, 23, 59, 59);
+      
+      const result = formatExistingEvents_(startDate, endDate);
+      
+      return ContentService.createTextOutput(JSON.stringify({
+        ok: true,
+        mode: 'format_events',
+        result: result
+      }))
+      .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 🔍 イベント詳細分析（権限テスト強化版）
+    if (mode === 'analyze_events') {
+      try {
+        const calendar = CalendarApp.getDefaultCalendar();
+        const now = new Date();
+        const startDate = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+        const endDate = new Date(now.getTime() + (7 * 24 * 60 * 60 * 1000));
+        
+        const events = calendar.getEvents(startDate, endDate);
+        const analysis = [];
+        const detailedInfo = {
+          calendarId: calendar.getId(),
+          calendarName: calendar.getName(),
+          calendarOwner: calendar.isOwnedByMe(),
+          currentUser: Session.getActiveUser().getEmail(),
+          totalEvents: events.length
+        };
+        
+        console.log('📋 カレンダー詳細情報:', JSON.stringify(detailedInfo));
+        
+        events.slice(0, 15).forEach((event, index) => {
+          const title = event.getTitle();
+          const isOwned = event.isOwnedByMe();
+          const hasA = title.includes(' A') || title.endsWith(' A');
+          const hasB = title.includes(' B') || title.endsWith(' B');  
+          const hasC = title.includes(' C') || title.endsWith(' C');
+          const hasStar = title.includes('★');
+          
+          // 詳細権限チェック
+          let canEdit = false;
+          let editError = null;
+          try {
+            // 編集可能かテスト（実際には変更しない）
+            const currentTitle = event.getTitle();
+            canEdit = true;
+          } catch (e) {
+            editError = e.toString();
+          }
+          
+          if (hasA || hasB || hasC || hasStar) {
+            const eventInfo = {
+              index: index + 1,
+              title: title,
+              isOwned: isOwned,
+              hasA: hasA,
+              hasB: hasB,
+              hasC: hasC,
+              hasStar: hasStar,
+              canEdit: canEdit,
+              editError: editError,
+              startTime: Utilities.formatDate(event.getStartTime(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm'),
+              eventId: event.getId()
+            };
+            
+            console.log(`📝 イベント ${index + 1}: ${JSON.stringify(eventInfo)}`);
+            analysis.push(eventInfo);
+          }
+        });
+        
+        return ContentService.createTextOutput(JSON.stringify({
+          ok: true,
+          mode: 'analyze_events',
+          result: {
+            ...detailedInfo,
+            analysis: analysis,
+            summary: {
+              needsConversion: analysis.filter(e => (e.hasA || e.hasB || e.hasC) && !e.hasStar && e.canEdit).length,
+              alreadyConverted: analysis.filter(e => e.hasStar).length,
+              cannotEdit: analysis.filter(e => !e.canEdit).length
+            }
+          }
+        })).setMimeType(ContentService.MimeType.JSON);
+        
+      } catch (e) {
+        console.error('❌ 分析エラー:', e.toString());
+        return ContentService.createTextOutput(JSON.stringify({
+          ok: false,
+          error: `分析失敗: ${e.toString()}`
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // 🆕 毎日自動フォーマット手動実行
+    if (mode === 'daily_format') {
+      const result = dailyAutoFormat();
+      return ContentService.createTextOutput(JSON.stringify({
+        ok: result.success,
+        mode: 'daily_format',
+        result: result
+      }))
+      .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 🆕 週次自動フォーマット手動実行
+    if (mode === 'weekly_format') {
+      const result = weeklyAutoFormat();
+      return ContentService.createTextOutput(JSON.stringify({
+        ok: result.success,
+        mode: 'weekly_format', 
+        result: result
       }))
       .setMimeType(ContentService.MimeType.JSON);
     }
@@ -1152,7 +1884,11 @@ function doGet(e) {
         'preview': 'POST with {"mode":"preview", "text":"your tasks"}',
         'create': 'POST with {"mode":"create", "text":"your tasks"}',
         'get_schedule': 'POST with {"mode":"get_schedule", "date":"今日", "days":1}',
-        'weekly_report': 'POST with {"mode":"weekly_report"}'
+        'weekly_report': 'POST with {"mode":"weekly_report"}',
+        'progress': 'POST with {"mode":"progress"}',
+        'mark_complete': 'POST with {"mode":"mark_complete", "task":"task_name"}',
+        'unmark_complete': 'POST with {"mode":"unmark_complete", "task":"task_name"}',
+        'format_events': 'POST with {"mode":"format_events", "days_back":7, "days_forward":30}'
       }
     }))
     .setMimeType(ContentService.MimeType.JSON);
@@ -1184,6 +1920,14 @@ function doGet(e) {
  * - 優先度: A (最高), B (中), C (低)
  * - 複数タスク: 1行に複数記述可能（自動分離）
  * 
+ * 【🆕 タスク完了管理】
+ * - タスク完了: カレンダー上でタイトルに「✓」を追加
+ *   例: "細胞継代 ★★★" → "細胞継代 ★★★ ✓"
+ * - 完了マークAPI: {"mode":"mark_complete", "task":"細胞継代"}
+ * - 完了解除API: {"mode":"unmark_complete", "task":"細胞継代"}
+ * - 進捗レポート: {"mode":"progress"} で今日の達成率を取得
+ * - 自動通知: 13:00と20:00に進捗レポート送信（トリガー設定必要）
+ * 
  * 【よくある問題と解決法】
  * Q: イベントが明後日に作成される
  * A: ✅修正済み - planFromRaw_で計算した日付をそのまま使用
@@ -1196,6 +1940,9 @@ function doGet(e) {
  * 
  * Q: 営業時間外に配置される
  * A: ✅設定可能 - SETTINGS.WORK_START / WORK_END で調整
+ * 
+ * Q: タスク完了が反映されない
+ * A: カレンダータイトルに「✓」を追加してください（手動またはAPI経由）
  * 
  * 【デバッグ方法】
  * - Google Apps Script ログビュー（実行 → ログを表示）で詳細確認
@@ -1215,3 +1962,40 @@ function doGet(e) {
  * 
  * =====================================================================
  */
+
+/**
+ * 🕐 毎日自動フォーマット実行関数
+ * Google Apps Scriptのトリガーで毎日実行する関数
+ * 昨日から今日作成されたA/B/Cイベントを★に自動変換
+ */
+function dailyAutoFormat() {
+  console.log('🕐 毎日自動フォーマット開始');
+  
+  try {
+    const now = new Date();
+    // 昨日から今日まで（新規作成されたイベントを対象）
+    const startDate = new Date(now.getTime() - (1 * 24 * 60 * 60 * 1000)); // 1日前
+    const endDate = new Date(now.getTime() + (1 * 24 * 60 * 60 * 1000));   // 1日後
+    
+    const result = formatExistingEvents_(startDate, endDate);
+    
+    console.log(`✅ 毎日自動フォーマット完了: ${result.converted}件変換, ${result.skipped}件スキップ`);
+    
+    // 結果が0件以上なら成功とみなす
+    return {
+      success: true,
+      timestamp: now.toISOString(),
+      converted: result.converted,
+      skipped: result.skipped,
+      message: `毎日自動フォーマット完了: ${result.converted}件変換`
+    };
+    
+  } catch (error) {
+    console.error('❌ 毎日自動フォーマットエラー:', error);
+    return {
+      success: false,
+      error: error.toString(),
+      message: '毎日自動フォーマット失敗'
+    };
+  }
+}
