@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.3] - 2025-11-05
+
+### Changed
+- **30件制限を解除**: formatExistingEvents_()で全イベントを処理するように変更
+  - 以前は30件に制限していたが、全イベントを処理するように改善
+  - より包括的な自動フォーマットを実現
+  - 今日のイベントも確実に変換
+
+### Technical Details
+- Removed: `maxEvents = 30` limit
+- Processing: All events in date range
+- Performance: GAS 6-minute limit内で動作
+
 ## [2.4.2] - 2025-11-05
 
 ### Fixed

@@ -1,5 +1,5 @@
 # main.py
-# Discord Calendar Bot v2.4.2
+# Discord Calendar Bot v2.4.3
 # 1行のテキストでGoogleカレンダーにタスクを追加、進捗管理も自動化
 # https://github.com/Nodee-1014/discord-calendar-bot
 
@@ -13,7 +13,7 @@ from urllib.parse import quote_plus
 from datetime import datetime, time
 import asyncio
 
-__version__ = "2.4.2"
+__version__ = "2.4.3"
 
 # ---------- 設定（環境変数から読む） ----------
 load_dotenv()  # 追加：.env を読み込む

@@ -1,6 +1,6 @@
 /* =====================================================================
  * Text2GCalendar - Google Calendar Automation System
- * Version: 2.4.2
+ * Version: 2.4.3
  * =====================================================================
  * 📅 主要機能:
  *   - テキストから自動でカレンダーイベント作成
@@ -407,20 +407,13 @@ function formatExistingEvents_(startDate, endDate) {
     
     const events = calendar.getEvents(startDate, endDate);
     
-    // 処理件数を制限（パフォーマンス向上）
-    const maxEvents = 30;
-    const eventsToProcess = events.slice(0, maxEvents);
-    
     let converted = 0;
     let skipped = 0;
     const results = [];
     
-    console.log(`\n🔧 既存イベント自動フォーマット開始 (${events.length}件中${Math.min(events.length, maxEvents)}件処理)`);
-    if (events.length > maxEvents) {
-      console.log(`⚠️ パフォーマンスのため${maxEvents}件に制限`);
-    }
+    console.log(`\n🔧 既存イベント自動フォーマット開始 (${events.length}件すべて処理)`);
   
-  eventsToProcess.forEach(event => {
+  events.forEach(event => {
     const originalTitle = event.getTitle();
     
     // デバッグ情報を詳細出力
