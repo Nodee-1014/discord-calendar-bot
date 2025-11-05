@@ -1,6 +1,6 @@
 # 🚀 クイックスタートガイド
 
-Discord Calendar Bot v2.4を5分でセットアップ！
+Discord Calendar Bot v2.4.5を5分でセットアップ！
 
 ## 📋 事前準備
 
