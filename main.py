@@ -1,5 +1,5 @@
 # main.py
-# Discord Calendar Bot v2.4.5
+# Discord Calendar Bot v2.5.0
 # 1行のテキストでGoogleカレンダーにタスクを追加、進捗管理も自動化
 # https://github.com/Nodee-1014/discord-calendar-bot
 
@@ -13,7 +13,7 @@ from urllib.parse import quote_plus
 from datetime import datetime, time
 import asyncio
 
-__version__ = "2.4.5"
+__version__ = "2.5.0"
 
 # ---------- 設定（環境変数から読む） ----------
 load_dotenv()  # 追加：.env を読み込む
@@ -355,6 +355,33 @@ async def undone(interaction: discord.Interaction, task: str):
         print(f"予期しないエラー: {type(e).__name__}: {e}")
         await interaction.followup.send(f"エラー: {e}", ephemeral=True)
 
+@bot.tree.command(name="must_one", description="今日の主役タスクに☆マークをつける（マストワンシステム）")
+@app_commands.describe(task="主役にするタスク名（部分一致）")
+async def must_one(interaction: discord.Interaction, task: str):
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        print(f"マストワン設定: task={task}")
+        url = f"{GAS_ENDPOINT}?key={API_KEY}"
+        resp = requests.post(url, json={"mode": "set_must_one", "task": task}, timeout=30)
+        print(f"GAS APIレスポンス: status={resp.status_code}")
+        resp.raise_for_status()
+        data = resp.json()
+        print(f"GAS APIレスポンス内容: {data}")
+        
+        if data.get("ok"):
+            await interaction.followup.send(f"🌟 {data.get('message', 'タスクを今日の主役に設定しました')}", ephemeral=True)
+        else:
+            await interaction.followup.send(f"⚠️ {data.get('message', 'タスクが見つかりませんでした')}", ephemeral=True)
+            
+    except requests.exceptions.HTTPError as e:
+        status_code = getattr(e.response, 'status_code', 'Unknown')
+        error_msg = f"HTTP Error {status_code}"
+        print(f"HTTP エラー詳細: {error_msg}")
+        await interaction.followup.send(f"通信エラー: {error_msg}", ephemeral=True)
+    except Exception as e:
+        print(f"予期しないエラー: {type(e).__name__}: {e}")
+        await interaction.followup.send(f"エラー: {e}", ephemeral=True)
+
 @bot.tree.command(name="progress", description="今日のタスク進捗を表示")
 async def progress(interaction: discord.Interaction):
     # 即座に応答（3秒タイムアウト回避）
@@ -384,6 +411,7 @@ async def progress(interaction: discord.Interaction):
         completion_rate = progress_data.get("completionRate", 0)
         completed_tasks = progress_data.get("completed", [])
         pending_tasks = progress_data.get("pending", [])
+        must_one_task = progress_data.get("mustOne", None)  # 🆕 マストワンタスク
         
         # 進捗レポートを整形
         lines = [f"📊 **今日の進捗レポート ({date})**\n"]
@@ -396,6 +424,13 @@ async def progress(interaction: discord.Interaction):
         if total == 0:
             lines.append("\n今日予定されているタスクはありません。")
         else:
+            # 🆕 マストワンタスク（最優先表示）
+            if must_one_task:
+                lines.append(f"\n**🌟 今日の主役タスク:**")
+                lines.append("```")
+                lines.append(f"☆ {must_one_task['title']} {must_one_task['start']}-{must_one_task['end']}")
+                lines.append("```")
+            
             # 完了タスク
             if completed_tasks:
                 lines.append(f"\n**✅ 完了タスク ({len(completed_tasks)}個):**")

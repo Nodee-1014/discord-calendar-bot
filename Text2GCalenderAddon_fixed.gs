@@ -1,6 +1,6 @@
 /* =====================================================================
  * Text2GCalendar - Google Calendar Automation System
- * Version: 2.4.3
+ * Version: 2.5.0
  * =====================================================================
  * 📅 主要機能:
  *   - テキストから自動でカレンダーイベント作成
@@ -98,6 +98,7 @@ function generateDailyProgress_() {
   const pending = [];
   let totalTasks = 0;
   let completedCount = 0;
+  let mustOneTask = null;  // 🆕 マストワンタスク
   
   events.forEach(event => {
     // 終日イベントは除外
@@ -110,6 +111,15 @@ function generateDailyProgress_() {
     
     totalTasks++;
     
+    // 🆕 ☆マークがあればマストワンタスク
+    const hasMustOne = title.includes('☆');
+    const taskData = {
+      title: title,
+      start: Utilities.formatDate(start, tz, 'HH:mm'),
+      end: Utilities.formatDate(end, tz, 'HH:mm'),
+      duration: Math.round(duration)
+    };
+    
     // タイトルに✓があれば完了タスク
     if (title.includes('✓')) {
       completedCount++;
@@ -120,12 +130,12 @@ function generateDailyProgress_() {
         duration: Math.round(duration)
       });
     } else {
-      pending.push({
-        title: title,
-        start: Utilities.formatDate(start, tz, 'HH:mm'),
-        end: Utilities.formatDate(end, tz, 'HH:mm'),
-        duration: Math.round(duration)
-      });
+      // ☆マークがあれば、マストワンタスクとして記録（未完了のみ）
+      if (hasMustOne && !mustOneTask) {
+        mustOneTask = taskData;
+      }
+      
+      pending.push(taskData);
     }
   });
   
@@ -135,6 +145,9 @@ function generateDailyProgress_() {
   console.log(`📈 進捗サマリ: ${completedCount}/${totalTasks} (${completionRate}%)`);
   console.log(`✅ 完了タスク: ${completed.length}件`);
   console.log(`⏳ 未完了タスク: ${pending.length}件`);
+  if (mustOneTask) {
+    console.log(`🌟 マストワンタスク: ${mustOneTask.title}`);
+  }
   
   return {
     date: Utilities.formatDate(now, tz, 'yyyy-MM-dd (EEE)'),
@@ -143,7 +156,8 @@ function generateDailyProgress_() {
     pendingCount: totalTasks - completedCount,
     completionRate: completionRate,
     completed: completed,
-    pending: pending
+    pending: pending,
+    mustOne: mustOneTask  // 🆕 マストワンタスク追加
   };
 }
 
@@ -232,6 +246,66 @@ function unmarkTaskAsComplete_(taskTitle) {
   return {
     ok: found,
     message: found ? `↩️ タスク未完了に戻しました: ${updatedTitle}` : `⚠️ 完了タスクが見つかりません: "${taskTitle}"`
+  };
+}
+
+/**
+ * マストワンタスクを設定（今日の主役タスクに☆マークを付ける）
+ * @param {string} taskTitle - タスクタイトル（部分一致）
+ * @return {Object} 結果
+ */
+function setMustOneTask_(taskTitle) {
+  const tz = SETTINGS.TIMEZONE;
+  const now = new Date();
+  
+  // 今日のイベントを取得
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  
+  const calendar = CalendarApp.getDefaultCalendar();
+  const events = calendar.getEvents(startOfDay, endOfDay);
+  
+  let found = false;
+  let updatedTitle = '';
+  
+  // まず、既存の☆を全て削除（マストワンは1つのみ）
+  for (const event of events) {
+    const title = event.getTitle();
+    
+    // 終日イベントはスキップ
+    if (event.isAllDayEvent()) continue;
+    
+    // ☆がある場合は削除
+    if (title.includes('☆')) {
+      const cleanTitle = title.replace(/☆+/g, '').trim();
+      event.setTitle(cleanTitle);
+      console.log(`🔄 既存の☆を削除: "${title}" → "${cleanTitle}"`);
+    }
+  }
+  
+  // 指定されたタスクに☆を追加
+  for (const event of events) {
+    const title = event.getTitle();
+    
+    // 終日イベントはスキップ
+    if (event.isAllDayEvent()) continue;
+    
+    // 完了タスク（✓付き）はスキップ
+    if (title.includes('✓')) continue;
+    
+    // タイトルに部分一致
+    if (title.includes(taskTitle)) {
+      updatedTitle = '☆ ' + title;
+      event.setTitle(updatedTitle);
+      found = true;
+      console.log(`🌟 マストワン設定: "${title}" → "${updatedTitle}"`);
+      break;
+    }
+  }
+  
+  return {
+    ok: found,
+    message: found ? `🌟 今日の主役タスクに設定しました: ${updatedTitle}` : `⚠️ タスクが見つかりません: "${taskTitle}"`
   };
 }
 
@@ -1691,6 +1765,22 @@ function doPost(e) {
       }
       
       const result = unmarkTaskAsComplete_(taskToUnmark);
+      return ContentService.createTextOutput(JSON.stringify(result))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 🆕 マストワン設定（今日の主役タスクに☆マークを付ける）
+    if (mode === 'set_must_one') {
+      const taskToMark = body.task;
+      if (!taskToMark) {
+        return ContentService.createTextOutput(JSON.stringify({ 
+          ok: false, 
+          error: 'パラメータ "task" が必要です' 
+        }))
+        .setMimeType(ContentService.MimeType.JSON);
+      }
+      
+      const result = setMustOneTask_(taskToMark);
       return ContentService.createTextOutput(JSON.stringify(result))
         .setMimeType(ContentService.MimeType.JSON);
     }

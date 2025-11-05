@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2025-11-05
+
+### Added
+- **🌟 マストワンシステム**: 今日の主役タスクに☆マークをつける新機能
+  - `/must_one [タスク名]` コマンドで1つのタスクだけに☆を付けられる
+  - `/progress` で主役タスクを最優先表示（🌟セクション）
+  - 既存の☆は自動的に削除され、常に1つだけ維持（Must One）
+  - 完了済みタスク（✓付き）には☆を付けられない仕様
+
+### Changed
+- GASバージョンを2.5.0に更新
+- 進捗レポートに `mustOne` フィールドを追加
+
+### Technical Details
+- New Command: `/must_one` for setting main task
+- GAS Function: `setMustOneTask_()` - manages ☆ marker (only one allowed)
+- Progress Display: Shows ☆ task in dedicated "🌟 今日の主役タスク" section
+- Auto-cleanup: Removes existing ☆ marks before adding new one
+
 ## [2.4.5] - 2025-11-05
 
 ### Changed
