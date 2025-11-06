@@ -1,5 +1,5 @@
 # main.py
-# Discord Calendar Bot v2.5.0
+# Discord Calendar Bot v2.5.1
 # 1行のテキストでGoogleカレンダーにタスクを追加、進捗管理も自動化
 # https://github.com/Nodee-1014/discord-calendar-bot
 
@@ -13,7 +13,7 @@ from urllib.parse import quote_plus
 from datetime import datetime, time
 import asyncio
 
-__version__ = "2.5.0"
+__version__ = "2.5.1"
 
 # ---------- 設定（環境変数から読む） ----------
 load_dotenv()  # 追加：.env を読み込む
@@ -118,6 +118,26 @@ def render_preview(preview_items):
         lines.append(f"- {it['title']}: {s} → {e}")
     return "\n".join(lines) if lines else "(なし)"
 
+def split_message(content, max_length=1900):
+    """メッセージを分割（Discord 2000文字制限対応）"""
+    if len(content) <= max_length:
+        return [content]
+    
+    chunks = []
+    current_chunk = ""
+    
+    for line in content.split('\n'):
+        if len(current_chunk) + len(line) + 1 > max_length:
+            chunks.append(current_chunk)
+            current_chunk = line + '\n'
+        else:
+            current_chunk += line + '\n'
+    
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks
+
 @bot.tree.command(name="t2g", description="Text→Google Calendar")
 @app_commands.describe(text="改行でタスク（例: '251030 タスクA 1h A\\nタスクB 30min B'）")
 async def t2g(interaction: discord.Interaction, text: str):
@@ -153,13 +173,19 @@ async def t2g(interaction: discord.Interaction, text: str):
             calendar_links.append(f"📅 [{it['title']}](<{calendar_url}>)")
         
         # 結果メッセージを作成
-        result_msg = "**✅ 作成しました**\n```\n" + "\n".join(lines) + "\n```"
+        result_msg = f"**✅ {len(created)}個のタスクを作成しました**\n```\n" + "\n".join(lines) + "\n```"
         
         # カレンダーリンクを追加
         if calendar_links:
             result_msg += "\n\n**🔗 Googleカレンダーで開く:**\n" + "\n".join(calendar_links)
         
-        await interaction.followup.send(result_msg, ephemeral=True)
+        # メッセージを分割して送信（2000文字制限対応）
+        message_chunks = split_message(result_msg)
+        for i, chunk in enumerate(message_chunks):
+            if i == 0:
+                await interaction.followup.send(chunk, ephemeral=True)
+            else:
+                await interaction.followup.send(f"**(続き {i+1}/{len(message_chunks)})**\n{chunk}", ephemeral=True)
     except requests.exceptions.HTTPError as e:
         status_code = getattr(e.response, 'status_code', 'Unknown')
         error_msg = f"HTTP Error {status_code}"
@@ -200,7 +226,7 @@ async def schedule(interaction: discord.Interaction, date: str = "今日", days:
             return
         
         # イベントをフォーマット
-        lines = [f"**📅 {date}の予定**\n"]
+        lines = [f"**📅 {date}の予定 ({len(events)}個)**\n"]
         calendar_links = []
         
         for ev in events:
@@ -230,7 +256,13 @@ async def schedule(interaction: discord.Interaction, date: str = "今日", days:
         if calendar_links:
             result += "\n\n**🔗 Googleカレンダーで開く:**\n" + "\n".join(calendar_links)
         
-        await interaction.followup.send(result, ephemeral=True)
+        # メッセージを分割して送信（2000文字制限対応）
+        message_chunks = split_message(result)
+        for i, chunk in enumerate(message_chunks):
+            if i == 0:
+                await interaction.followup.send(chunk, ephemeral=True)
+            else:
+                await interaction.followup.send(f"**(続き {i+1}/{len(message_chunks)})**\n{chunk}", ephemeral=True)
         
     except requests.exceptions.HTTPError as e:
         status_code = getattr(e.response, 'status_code', 'Unknown')

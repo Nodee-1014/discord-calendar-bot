@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1] - 2025-11-06
+
+### Fixed
+- **Discord 2000文字制限エラーを修正**: 大量タスク作成時のエラーを解決
+  - メッセージ自動分割機能を追加（`split_message()`関数）
+  - `/t2g` と `/schedule` で長いメッセージを複数に分割して送信
+  - 各メッセージは1900文字以内に制限
+  - 「(続き 2/3)」のように分割を表示
+
+### Technical Details
+- Error: "Invalid Form Body: Must be 2000 or fewer in length"
+- Solution: Auto-split messages with `split_message()` helper function
+- Applied to: `/t2g` command and `/schedule` command
+- Max chunk size: 1900 characters (safe margin from 2000 limit)
+
 ## [2.5.0] - 2025-11-05
 
 ### Added
