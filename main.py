@@ -1,5 +1,5 @@
 # main.py
-# Discord Calendar Bot v2.5.1
+# Discord Calendar Bot v2.6.0
 # 1行のテキストでGoogleカレンダーにタスクを追加、進捗管理も自動化
 # https://github.com/Nodee-1014/discord-calendar-bot
 
@@ -13,7 +13,7 @@ from urllib.parse import quote_plus
 from datetime import datetime, time
 import asyncio
 
-__version__ = "2.5.1"
+__version__ = "2.6.0"
 
 # ---------- 設定（環境変数から読む） ----------
 load_dotenv()  # 追加：.env を読み込む
@@ -377,6 +377,59 @@ async def undone(interaction: discord.Interaction, task: str):
             await interaction.followup.send(f"↩️ {data.get('message', 'タスクの完了を取り消しました')}", ephemeral=True)
         else:
             await interaction.followup.send(f"⚠️ {data.get('message', '完了タスクが見つかりませんでした')}", ephemeral=True)
+            
+    except requests.exceptions.HTTPError as e:
+        status_code = getattr(e.response, 'status_code', 'Unknown')
+        error_msg = f"HTTP Error {status_code}"
+        print(f"HTTP エラー詳細: {error_msg}")
+        await interaction.followup.send(f"通信エラー: {error_msg}", ephemeral=True)
+    except Exception as e:
+        print(f"予期しないエラー: {type(e).__name__}: {e}")
+        await interaction.followup.send(f"エラー: {e}", ephemeral=True)
+
+@bot.tree.command(name="ad", description="今日のタスク全てを完了にする（All Done）")
+async def all_done(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        print(f"全タスク完了: All Done")
+        url = f"{GAS_ENDPOINT}?key={API_KEY}"
+        resp = requests.post(url, json={"mode": "mark_all_complete"}, timeout=30)
+        print(f"GAS APIレスポンス: status={resp.status_code}")
+        resp.raise_for_status()
+        data = resp.json()
+        print(f"GAS APIレスポンス内容: {data}")
+        
+        if data.get("ok"):
+            completed = data.get('completed', [])
+            already_done = data.get('already_done', [])
+            total = data.get('total', 0)
+            
+            # 結果メッセージを作成
+            lines = ["**✅ 今日のタスクを全て完了にしました！**\n"]
+            
+            if completed:
+                lines.append(f"**完了マークを追加 ({len(completed)}個):**")
+                lines.append("```")
+                for task in completed:
+                    lines.append(f"• {task}")
+                lines.append("```")
+            
+            if already_done:
+                lines.append(f"\n**すでに完了済み ({len(already_done)}個):**")
+                lines.append("```")
+                for task in already_done:
+                    lines.append(f"• {task}")
+                lines.append("```")
+            
+            if total == 0:
+                lines = ["**📭 今日のタスクはありません**"]
+            else:
+                lines.append(f"\n**合計: {total}個のタスクを処理しました**")
+            
+            result_msg = "\n".join(lines)
+            await interaction.followup.send(result_msg, ephemeral=True)
+        else:
+            await interaction.followup.send(f"⚠️ {data.get('message', 'エラーが発生しました')}", ephemeral=True)
             
     except requests.exceptions.HTTPError as e:
         status_code = getattr(e.response, 'status_code', 'Unknown')

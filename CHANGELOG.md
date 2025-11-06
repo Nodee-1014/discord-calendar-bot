@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2025-11-06
+
+### Added
+- **✅ 一括完了機能（All Done）**: 今日のタスク全てを完了にする `/ad` コマンド
+  - 一日の終わりに全タスクをまとめて完了マーク
+  - 未完了タスクに自動で ✓ を追加
+  - 完了済みタスクとの内訳を表示
+  - 終日イベントは対象外
+
+### Changed
+- GASバージョンを2.6.0に更新
+- Bot総コマンド数: 10個（`/ad` 追加）
+
+### Technical Details
+- New Command: `/ad` - marks all tasks as complete for today
+- GAS Function: `markAllTasksComplete_()` - adds ✓ to all pending tasks
+- Response: Shows breakdown of newly completed vs already done tasks
+- Skips: All-day events excluded from completion
+
 ## [2.5.1] - 2025-11-06
 
 ### Fixed

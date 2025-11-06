@@ -94,6 +94,7 @@ API_KEY='my_secure_api_key_2025_discord_bot'
 /must_one レポート # 今日の主役タスクに☆マーク（1つだけ）
 /done レポート    # タスク完了マーク
 /undone 会議      # 完了解除
+/ad              # 今日のタスク全て完了（All Done）
 ```
 
 ### **📈 レポート**

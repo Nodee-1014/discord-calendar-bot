@@ -1,6 +1,6 @@
 /* =====================================================================
  * Text2GCalendar - Google Calendar Automation System
- * Version: 2.5.0
+ * Version: 2.6.0
  * =====================================================================
  * 📅 主要機能:
  *   - テキストから自動でカレンダーイベント作成
@@ -306,6 +306,57 @@ function setMustOneTask_(taskTitle) {
   return {
     ok: found,
     message: found ? `🌟 今日の主役タスクに設定しました: ${updatedTitle}` : `⚠️ タスクが見つかりません: "${taskTitle}"`
+  };
+}
+
+/**
+ * 今日のタスク全てを完了にする（All Done）
+ * @return {Object} 結果
+ */
+function markAllTasksComplete_() {
+  const tz = SETTINGS.TIMEZONE;
+  const now = new Date();
+  
+  // 今日のイベントを取得
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  
+  const calendar = CalendarApp.getDefaultCalendar();
+  const events = calendar.getEvents(startOfDay, endOfDay);
+  
+  const completed = [];
+  const alreadyDone = [];
+  let total = 0;
+  
+  for (const event of events) {
+    const title = event.getTitle();
+    
+    // 終日イベントはスキップ
+    if (event.isAllDayEvent()) continue;
+    
+    total++;
+    
+    // すでに完了マークがある場合
+    if (title.includes('✓')) {
+      alreadyDone.push(title);
+      console.log(`⏭️  すでに完了: "${title}"`);
+    } else {
+      // 完了マークを追加
+      const updatedTitle = title + ' ✓';
+      event.setTitle(updatedTitle);
+      completed.push(updatedTitle);
+      console.log(`✅ タスク完了: "${title}" → "${updatedTitle}"`);
+    }
+  }
+  
+  console.log(`📊 全タスク完了: 新規完了=${completed.length}, すでに完了=${alreadyDone.length}, 合計=${total}`);
+  
+  return {
+    ok: true,
+    completed: completed,
+    already_done: alreadyDone,
+    total: total,
+    message: `✅ ${completed.length}個のタスクを完了にしました`
   };
 }
 
@@ -1781,6 +1832,13 @@ function doPost(e) {
       }
       
       const result = setMustOneTask_(taskToMark);
+      return ContentService.createTextOutput(JSON.stringify(result))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // 🆕 今日のタスク全て完了（All Done）
+    if (mode === 'mark_all_complete') {
+      const result = markAllTasksComplete_();
       return ContentService.createTextOutput(JSON.stringify(result))
         .setMimeType(ContentService.MimeType.JSON);
     }
